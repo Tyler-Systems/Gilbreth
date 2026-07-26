@@ -25,7 +25,7 @@ person's activity, and regenerated whenever the interface changes.
 | Windows x64 | Supported. [`v0.1.1`](https://github.com/Tyler-Systems/Gilbreth/releases/tag/v0.1.1) is published, signed, and built from this source root. | None open. Later versions follow the [release process](docs/RELEASE_PROCESS.md). |
 | macOS arm64 | Ambient capture and dogfood work; no packaged release. | The macOS distribution work, before any macOS package ships. |
 | Linux | Portable-library and CI hygiene only. | No Linux product release is planned. |
-| Contributions | Issues are open. External code pull requests are not. | Publishing the contributor assignment agreement. |
+| Contributions | Open. Issues need nothing; code needs a signed [contributor licence agreement](CONTRIBUTOR_AGREEMENT.md). | None open. |
 
 Start with the [maintainer guide](docs/MAINTAINING.md). The canonical project
 documents are the [release process](docs/RELEASE_PROCESS.md),
@@ -195,13 +195,16 @@ installation; program files are replaced while the data root is preserved.
 ## Project feedback and contributions
 
 Bug reports and feature proposals are welcome through
-[GitHub Issues](https://github.com/Tyler-Systems/Gilbreth/issues). External code
-pull requests are not accepted yet: contributions require a signed Contributor
-Licence Agreement, so that Gilbreth can stay available under both
-AGPL-3.0-or-later and a commercial licence. Contributors keep their copyright,
-and the agreement obliges the project to keep licensing contributions under the
-open licence as well. See [CONTRIBUTING.md](CONTRIBUTING.md). Code PRs open once
-the agreement is published.
+[GitHub Issues](https://github.com/Tyler-Systems/Gilbreth/issues), and need
+nothing more than an issue.
+
+Code contributions are open too, and require a signed
+[Contributor Licence Agreement](CONTRIBUTOR_AGREEMENT.md) so that Gilbreth can
+stay available under both AGPL-3.0-or-later and a commercial licence. You keep
+the copyright in what you write, and the agreement obliges the project to keep
+licensing your contribution under an OSI-approved open licence as well. A bot
+asks you to accept it on your first pull request; you accept once, not each
+time. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 Maintainer work has two tracks:
 

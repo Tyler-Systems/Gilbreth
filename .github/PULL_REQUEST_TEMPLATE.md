@@ -1,10 +1,11 @@
 <!--
-External code pull requests are not accepted until the Contributor Licence
-Agreement is published. See CONTRIBUTING.md. Issues are open and welcome.
+Thanks for contributing. On your first pull request a bot will ask you to accept
+the Contributor Licence Agreement; you accept once, not every time.
 
 You keep the copyright in what you write. The agreement licenses it to Tyler
 Systems LLC broadly enough to support the commercial licence, and obliges the
-project to keep licensing your work under the open licence too.
+project to keep licensing your work under an OSI-approved open licence too.
+See CONTRIBUTING.md.
 -->
 
 ## What this changes

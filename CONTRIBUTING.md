@@ -1,7 +1,8 @@
 # Contributing to Gilbreth
 
-Issues are welcome now. **Code contributions are not being accepted yet** —
-see the status below.
+Issues and code contributions are both welcome. Code requires a signed
+[Contributor Licence Agreement](CONTRIBUTOR_AGREEMENT.md); a bot will ask you to
+accept it on your first pull request.
 
 ## Reporting
 
@@ -56,12 +57,13 @@ The agreement is published at
 [CONTRIBUTOR_AGREEMENT.md](CONTRIBUTOR_AGREEMENT.md). Read it before writing
 code rather than after.
 
-**Current status: signing is not switched on yet.** The agreement text is
-settled, but the mechanism that records acceptance is not running, so external
-code pull requests are still not accepted and unsolicited ones will be closed
-unmerged. That is not a judgement on the work. Merging one before acceptance can
-be recorded causes exactly the problem above, and it cannot be undone afterwards.
-Issues remain open and are the most useful thing you can send in the meantime.
+**How it works in practice.** Open a pull request as normal. A bot comments with
+a link to the exact version of the agreement being offered, and asks you to reply
+accepting it. Once you have, the check goes green and the pull request can be
+reviewed on its merits. You accept once, not per pull request.
+
+If the agreement is not a trade you want to make, an issue is a genuinely useful
+contribution and needs no agreement at all.
 
 ## Building and testing
 

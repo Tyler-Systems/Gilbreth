@@ -15,10 +15,7 @@ each decision. Do not reconstruct current intent from closed review packets.
 
 The immediate critical path is:
 
-1. Publish the contributor assignment agreement, so external code contributions
-   can open. Until then unsolicited pull requests are closed unmerged, and
-   merging one would foreclose the commercial licence for that code.
-2. Complete the macOS distribution work before publishing a macOS package.
+1. Complete the macOS distribution work before publishing a macOS package.
 
 Packages and tags produced before the public import are historical development
 artifacts. They are not republished here.
@@ -177,8 +174,10 @@ an allowlist row in the docs test. Never a silent pass.
 - Update the capability matrix whenever a platform's behavior or permission
   requirement changes.
 - Use the release process for every release.
-- Issues are welcome. Do not accept external code pull requests until the
-  contributor agreement is published. Decided 2026-07-26: a **Contributor
+- Issues and code contributions are both open. Never merge a code pull request
+  whose author has not accepted the agreement; the `contributor agreement` check
+  enforces this, and overriding it is how the commercial licence gets foreclosed
+  by accident. Decided 2026-07-26: a **Contributor
   Licence Agreement** based on Harmony HA-CLA v1.0 with outbound Option Five,
   individual and entity forms, so contributed work can ship under both
   AGPL-3.0-or-later and the commercial licence while contributors keep their
