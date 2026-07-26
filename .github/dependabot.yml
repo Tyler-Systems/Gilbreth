@@ -1,0 +1,25 @@
+# Routine version updates are limited to GitHub Actions on purpose.
+#
+# Cargo is excluded, and the reason is mechanical rather than cautious.
+# `packaging/windows/third-party-inventory.json` and `docs/THIRD-PARTY-NOTICES.md`
+# record every dependency by name, version and licence, and both are verified by
+# hash against a regeneration of themselves. A dependency bump invalidates them
+# until `scripts/windows-third-party-notices.ps1 -Mode Generate` re-runs, so an
+# automated cargo pull request would arrive red and stay red until a human did
+# the regeneration anyway. The UI stack is also exact-pinned (`=0.35.0`) because
+# upgrades are scheduled work gated on snapshot review.
+#
+# Security alerts and Dependabot security updates are enabled for every
+# ecosystem, Cargo included. This file governs routine updates only, so a
+# vulnerability still surfaces.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: ci
