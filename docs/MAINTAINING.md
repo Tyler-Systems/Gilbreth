@@ -179,11 +179,16 @@ an allowlist row in the docs test. Never a silent pass.
 - Use the release process for every release.
 - Issues are welcome. Do not accept external code pull requests until the
   contributor agreement is published. Decided 2026-07-26: a **Contributor
-  Assignment Agreement**, individual and entity forms, so contributed work can
-  ship under both AGPL-3.0-or-later and the commercial licence. Two instruments
-  were ruled out for the same reason. A DCO only certifies the right to submit
-  and grants the project nothing further. The Apache ICLA grants the right to
-  *sublicense*, which is not the right to *relicense*, so it cannot loosen the
-  inbound licence enough to support a commercial offering. Either would let one
-  merged contribution foreclose the commercial option permanently. Policy and
-  scope are in [CONTRIBUTING.md](../CONTRIBUTING.md).
+  Licence Agreement** based on Harmony HA-CLA v1.0 with outbound Option Five,
+  individual and entity forms, so contributed work can ship under both
+  AGPL-3.0-or-later and the commercial licence while contributors keep their
+  copyright. Three alternatives were ruled out. A DCO only certifies the right
+  to submit and grants the project nothing further. The Apache ICLA grants the
+  right to *sublicense*, which is not the right to *relicense*, so it cannot
+  support a commercial offering. A copyright **assignment** was chosen first and
+  then reversed: 17 U.S.C. § 204(a) requires a signed writing to transfer
+  ownership, and whether a pull-request comment satisfies that is settled only
+  in the Fourth Circuit, so a defective signature would leave the project
+  selling code it did not own. That risk does not exist for a non-exclusive
+  licence, which § 204(a) does not reach. Policy is in
+  [CONTRIBUTING.md](../CONTRIBUTING.md).

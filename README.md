@@ -197,12 +197,11 @@ installation; program files are replaced while the data root is preserved.
 Bug reports and feature proposals are welcome through
 [GitHub Issues](https://github.com/Tyler-Systems/Gilbreth/issues). External code
 pull requests are not accepted yet: contributions require a signed Contributor
-Assignment Agreement, which assigns copyright in the contribution to Tyler
-Systems LLC and licenses it back to the contributor, so that Gilbreth can stay
-available under both AGPL-3.0-or-later and a commercial licence. That is a
-bigger ask than most projects make, so read
-[CONTRIBUTING.md](CONTRIBUTING.md) before writing code. Code PRs open once the
-agreement is published.
+Licence Agreement, so that Gilbreth can stay available under both
+AGPL-3.0-or-later and a commercial licence. Contributors keep their copyright,
+and the agreement obliges the project to keep licensing contributions under the
+open licence as well. See [CONTRIBUTING.md](CONTRIBUTING.md). Code PRs open once
+the agreement is published.
 
 Maintainer work has two tracks:
 

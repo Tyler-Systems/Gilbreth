@@ -1,9 +1,10 @@
 <!--
-External code pull requests are not accepted until the Contributor Assignment
+External code pull requests are not accepted until the Contributor Licence
 Agreement is published. See CONTRIBUTING.md. Issues are open and welcome.
 
-That agreement assigns copyright in your contribution to Tyler Systems LLC and
-licenses it back to you. Read it before writing code, not after.
+You keep the copyright in what you write. The agreement licenses it to Tyler
+Systems LLC broadly enough to support the commercial licence, and obliges the
+project to keep licensing your work under the open licence too.
 -->
 
 ## What this changes
@@ -17,8 +18,7 @@ licenses it back to you. Read it before writing code, not after.
 ## Checklist
 
 - [ ] I have read [CONTRIBUTING.md](../CONTRIBUTING.md) and I am covered by a
-      signed Contributor Assignment Agreement, or I am a maintainer. I
-      understand it assigns copyright in this contribution.
+      signed Contributor Licence Agreement, or I am a maintainer.
 - [ ] `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
       and `cargo test --workspace` pass.
 - [ ] `python -m pytest scripts/tests -q` passes.
