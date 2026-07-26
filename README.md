@@ -9,6 +9,15 @@
 ![Data](https://img.shields.io/badge/data-local%20only-brightgreen)
 ![License](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue)
 
+![Gilbreth's Today tab: a timeline of which application was in front, an hourly keyboard and mouse pulse, headline figures for active time and focus switches, and the patterns it flags as worth reviewing](crates/gilbreth-dashboard/tests/snapshots/windows/today_rich.png)
+
+Before installing anything that records you, the
+[Privacy tab](crates/gilbreth-dashboard/tests/snapshots/windows/privacy_rich.png)
+is the one to look at. It shows what is stored, the redaction and exclusion
+rules, how long things are kept, and how to delete them. Both images are the
+dashboard's own test snapshots, rendered from fixture data rather than a real
+person's activity, and regenerated whenever the interface changes.
+
 ## Project status
 
 | Area | Current state | Next gate |
