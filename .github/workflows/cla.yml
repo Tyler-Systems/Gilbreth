@@ -51,7 +51,7 @@ jobs:
           # commit only when publishing a new version of the agreement.
           path-to-document: https://github.com/Tyler-Systems/Gilbreth/blob/56096e2d365fa653d493f12bbd6ac6ab9d626670/CONTRIBUTOR_AGREEMENT.md
 
-          allowlist: dependabot[bot],bot*
+          allowlist: TylerSystems,dependabot[bot],bot*
 
           custom-notsigned-prcomment: >-
             Thanks for this. Gilbreth needs a signed Contributor Licence
