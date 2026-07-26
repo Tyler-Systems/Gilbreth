@@ -237,6 +237,17 @@ def test_workflows_cancel_superseded_runs_but_never_cancel_main() -> None:
         ), f"{workflow_path.name} must never cancel a main run"
 
 
+# Workflows allowed to hold write permissions, and why. Everything absent from
+# this mapping must be read-only, so adding a write-capable workflow is a
+# deliberate edit here rather than something that slips in unnoticed.
+WRITE_PERMITTED_WORKFLOWS = {
+    "cla.yml": (
+        "records contributor agreement acceptance, so it must commit the "
+        "signatures file and comment on the pull request"
+    ),
+}
+
+
 def test_public_workflows_are_read_only_sha_pinned_and_never_self_hosted() -> None:
     failures: list[str] = []
     workflow_root = REPO_ROOT / ".github" / "workflows"
@@ -245,8 +256,26 @@ def test_public_workflows_are_read_only_sha_pinned_and_never_self_hosted() -> No
     )
     for path in workflow_paths:
         workflow = path.read_text(encoding="utf-8")
-        if "\npermissions:\n  contents: read\n" not in workflow:
+        write_allowed = path.name in WRITE_PERMITTED_WORKFLOWS
+        if not write_allowed and "\npermissions:\n  contents: read\n" not in workflow:
             failures.append(f"{path.name}: missing top-level read-only permissions")
+        if write_allowed:
+            # A write-capable workflow still has to declare its permissions
+            # explicitly. Inheriting the repository default is how a workflow
+            # silently gains scope when that default is later changed.
+            if not re.search(r"^permissions:$", workflow, re.MULTILINE):
+                failures.append(
+                    f"{path.name}: write-permitted workflow must declare "
+                    "top-level permissions explicitly"
+                )
+            # pull_request_target plus a checkout of the pull request's own code
+            # is the combination that leaks the token. Writing is tolerable;
+            # writing while running contributor-supplied code is not.
+            if "pull_request_target" in workflow and "actions/checkout@" in workflow:
+                failures.append(
+                    f"{path.name}: pull_request_target must not check out "
+                    "pull request code while holding write permissions"
+                )
         if re.search(r"^[ \t]+permissions:[ \t]*$", workflow, re.MULTILINE):
             failures.append(f"{path.name}: job-level permissions override is forbidden")
         for runner in re.findall(r"^[ \t]*runs-on:[ \t]*(.+)$", workflow, re.MULTILINE):

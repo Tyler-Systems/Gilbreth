@@ -238,12 +238,18 @@ and by notifying Us in writing of any change.
 
 ## How to sign
 
-Comment on your pull request with your full legal name and this sentence, using
-the commit reference the bot gives you:
+When you open a pull request, a bot comments with a link to the exact version of
+this agreement being offered to you. That link points at a specific commit, so
+the version you are accepting is fixed and cannot change afterwards. Read it,
+then reply on the pull request with this sentence:
 
-> I have read the Gilbreth Contributor Licence Agreement at commit `<SHA>` and I
-> hereby accept its terms, for all Contributions I have Submitted or will Submit
-> to this repository.
+> I have read the Gilbreth Contributor Licence Agreement and I hereby accept its
+> terms, for all Contributions I have Submitted or will Submit to this
+> repository.
+
+In the same comment, please give your **full legal name**. A GitHub username is
+not a legal person, and the agreement needs to identify who is granting the
+licence.
 
 If you are accepting for an entity, add:
 
@@ -252,13 +258,15 @@ If you are accepting for an entity, add:
 Our recorded acknowledgement of your acceptance constitutes our agreement to
 these terms.
 
-**What we record, and why.** Alongside your acceptance we store your full legal
-name, your GitHub username, the name and email address on your commits, the date,
-and the commit reference of the agreement version you accepted. We need this to
-show that a licence exists for the code we ship, which is the whole purpose of
-this agreement. It is stored in this repository's git history, which is the
-record. It is not used for anything else and is never sold or shared. If you have
-a question about that, raise it in the pull request before accepting.
+**What we record, and why.** Alongside your acceptance we store your GitHub
+username and account id, the pull request number, and the date, in
+`signatures/contributor-agreement.json` in this repository. Your full legal name
+and any entity details stay in the pull request comment itself. The version of
+the agreement you accepted is fixed by the commit link the bot posted. We need
+this to show that a licence exists for the code we ship, which is the whole
+purpose of this agreement. The repository's git history is the record. It is not
+used for anything else and is never sold or shared. If you have a question about
+that, raise it in the pull request before accepting.
 
 If you would rather sign a paper copy, or your employer requires one, open an
 issue asking for the signing address and we will arrange it.

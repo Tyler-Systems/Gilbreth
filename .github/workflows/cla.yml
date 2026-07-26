@@ -1,0 +1,74 @@
+# Records acceptance of the Contributor Licence Agreement on pull requests.
+#
+# Why this is safe despite using pull_request_target with write permissions:
+#
+#   * pull_request_target runs the workflow file from the BASE branch, not the
+#     pull request's copy, so a contributor cannot edit this file to capture the
+#     token.
+#   * This job never checks out the pull request's code. That is where the
+#     pull_request_target vulnerability normally lives, and it does not apply.
+#   * The action is pinned to a commit, not a tag. It matters here more than
+#     usual: contributor-assistant/github-action was archived on 2026-03-23 and
+#     is unmaintained, so a moving tag would be an unowned dependency.
+#
+# The repository default for GITHUB_TOKEN stays read-only. The `permissions`
+# block below raises it for this workflow alone, which is why the repository-wide
+# hardening does not have to be relaxed to make signing work.
+
+name: contributor agreement
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_target:
+    types: [opened, closed, synchronize]
+
+permissions:
+  actions: write
+  contents: write
+  pull-requests: write
+  statuses: write
+
+concurrency:
+  group: cla-${{ github.event.pull_request.number || github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  agreement:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: contributor-assistant/github-action@ca4a40a7d1004f18d9960b404b97e5f30a505a08 # v2.6.1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          branch: main
+          path-to-signatures: signatures/contributor-agreement.json
+
+          # A permalink, deliberately. It pins the exact version a contributor
+          # accepted, which is what section 6.6 of the agreement relies on:
+          # the version in effect on the Submission Date governs. Bump this
+          # commit only when publishing a new version of the agreement.
+          path-to-document: https://github.com/Tyler-Systems/Gilbreth/blob/56096e2d365fa653d493f12bbd6ac6ab9d626670/CONTRIBUTOR_AGREEMENT.md
+
+          allowlist: TylerSystems,dependabot[bot],bot*
+
+          custom-notsigned-prcomment: >-
+            Thanks for this. Gilbreth needs a signed Contributor Licence
+            Agreement before code can be merged, so that the project can offer a
+            paid commercial licence alongside the AGPL. **You keep the copyright
+            in what you write**, and the agreement obliges the project to keep
+            publishing your contribution under an OSI-approved open licence.
+            Please read it in full, then reply below with the sentence under
+            "How to sign", including your full legal name.
+
+          custom-pr-sign-comment: >-
+            I have read the Gilbreth Contributor Licence Agreement and I hereby
+            accept its terms, for all Contributions I have Submitted or will
+            Submit to this repository.
+
+          custom-allsigned-prcomment: >-
+            All contributors have accepted the Contributor Licence Agreement.
+            Thank you.
+
+          lock-pullrequest-aftermerge: true
