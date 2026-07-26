@@ -9,13 +9,15 @@ each decision. Do not reconstruct current intent from closed review packets.
 | Area | State |
 |---|---|
 | Repository | Public, and starting from a single import commit. Development history before that import is kept in a private archive. |
-| Windows x64 | The ordinary builder, the disposable-clone package proof, and the clean-machine installed-payload marker smoke are all complete. `v0.1.1` is the first release built from this source root. |
+| Windows x64 | Shipped. `v0.1.1` is published, signed through Azure Artifact Signing, and built from this source root. The builder, disposable-clone package proof, clean-machine marker smoke, and all four uninstall lanes are complete. |
 | macOS arm64 | Application capture and dogfood are complete. Public packaging is blocked on the macOS distribution work. |
 | Linux | Portable crates and CI hygiene only; there is no Linux application release lane. |
 
 The immediate critical path is:
 
-1. Build and publish `v0.1.1`.
+1. Publish the contributor assignment agreement, so external code contributions
+   can open. Until then unsolicited pull requests are closed unmerged, and
+   merging one would foreclose the commercial licence for that code.
 2. Complete the macOS distribution work before publishing a macOS package.
 
 Packages and tags produced before the public import are historical development
