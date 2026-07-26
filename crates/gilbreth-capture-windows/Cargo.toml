@@ -1,0 +1,56 @@
+[package]
+name = "gilbreth-capture-windows"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+uiaccess-helper-manifest = []
+
+[dependencies]
+crossbeam-channel.workspace = true
+gilbreth-core = { path = "../gilbreth-core" }
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+
+# windows-rs does not build on non-Windows targets (windows-future fails on
+# aarch64-apple-darwin), so the dependency itself is target-gated to match the
+# crate's own `#![cfg(target_os = "windows")]`; off-Windows this crate is an
+# empty shell with no Win32 dependency tree (MAC-0).
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = [
+    "ApplicationModel",
+    "Foundation",
+    "UI_Notifications",
+    "UI_Notifications_Management",
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_Security_Authorization",
+    "Win32_System_Com",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_DataExchange",
+    "Win32_System_LibraryLoader",
+    "Win32_System_IO",
+    "Win32_System_Memory",
+    "Win32_System_Ole",
+    "Win32_System_Pipes",
+    "Win32_System_Power",
+    "Win32_System_ProcessStatus",
+    "Win32_System_RemoteDesktop",
+    "Win32_System_StationsAndDesktops",
+    "Win32_System_WinRT",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+    "Win32_System_Variant",
+    "Win32_UI_Accessibility",
+    "Win32_UI_Input",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+] }
+windows-core = "0.62"
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -1,0 +1,9 @@
+LZMA SDK public-domain notice
+=============================
+
+The LZMA SDK is written and placed in the public domain by Igor Pavlov.
+
+Inno Setup 6.7.3 uses LZMA SDK code in the LZMA2 compressor/decompressor
+that is incorporated into the generated installer and uninstaller.
+
+Upstream project: https://www.7-zip.org/sdk.html

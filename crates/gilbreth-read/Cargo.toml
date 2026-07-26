@@ -1,0 +1,21 @@
+[package]
+name = "gilbreth-read"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Read-time analytics over the Gilbreth SQLite contract (the S2 reader port)"
+
+[dependencies]
+chrono.workspace = true
+icu_casemap.workspace = true
+# Constrain the baked casefold tables independently of the API crate.
+icu_casemap_data.workspace = true
+regex.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+# The shared product-copy style law (Lane B enforcement); tests only —
+# the runtime crate keeps its dependency surface unchanged.
+gilbreth-core = { path = "../gilbreth-core" }

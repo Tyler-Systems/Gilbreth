@@ -1,0 +1,10 @@
+Microsoft runtime and Windows system-component disposition
+============================================================
+
+The Windows release is built with the statically linked Microsoft Visual C++
+runtime selected by the pinned Visual Studio Build Tools license. Those
+redistributable runtime portions are governed by Microsoft's applicable
+license and redistribution terms.
+
+Windows system DLLs listed by the PE dependency policy are supplied by the
+operating system and are not redistributed in the Gilbreth installer.

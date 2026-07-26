@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "entries": [
+    {
+      "source": "build-output/gilbreth-app.exe",
+      "destination": "gilbreth-app.exe",
+      "sourceKind": "build-output",
+      "role": "installed-app"
+    },
+    {
+      "source": "LICENSE.md",
+      "destination": "LICENSE.md",
+      "sourceKind": "tracked",
+      "role": "license"
+    },
+    {
+      "source": "docs/VERIFY.md",
+      "destination": "VERIFY.md",
+      "sourceKind": "tracked",
+      "role": "verification-guide"
+    },
+    {
+      "source": "docs/THIRD-PARTY-NOTICES.md",
+      "destination": "THIRD-PARTY-NOTICES.md",
+      "sourceKind": "tracked",
+      "role": "third-party-notices"
+    },
+    {
+      "source": "crates/gilbreth-dashboard/assets/fonts/LICENSE-Inter.txt",
+      "destination": "licenses/LICENSE-Inter.txt",
+      "sourceKind": "tracked",
+      "role": "font-license"
+    },
+    {
+      "source": "crates/gilbreth-dashboard/assets/fonts/LICENSE-IBMPlexMono.txt",
+      "destination": "licenses/LICENSE-IBMPlexMono.txt",
+      "sourceKind": "tracked",
+      "role": "font-license"
+    }
+  ]
+}

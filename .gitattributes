@@ -1,0 +1,24 @@
+# Git hooks and shell scripts must use LF so Git Bash `sh` can run them on
+# Windows; CRLF in a shell script breaks its shebang and commands.
+.gitattributes       text eol=lf
+.githooks/pre-commit text eol=lf
+.githooks/pre-push   text eol=lf
+*.sh                 text eol=lf
+# Package dependency validation binds these release-policy bytes into the
+# release manifest; keep their hashes checkout-stable.
+packaging/windows/pe-dependencies.json  text eol=lf
+scripts/windows-pe-dependencies.psm1    text eol=lf
+
+# The Windows third-party notice gate hashes these exact bytes and regenerates
+# LF-only public output. Pin every tracked text input/output so a fresh Windows
+# checkout with core.autocrlf=true verifies identically.
+Cargo.lock                                                     text eol=lf
+crates/gilbreth-dashboard/assets/fonts/LICENSE-*.txt            text eol=lf
+docs/THIRD-PARTY-NOTICES.md                                    text eol=lf
+packaging/windows/notices/*.txt                                text eol=lf
+# Preserve the pinned Rust toolchain artifact byte-for-byte, including its
+# upstream HTML indentation-only lines.
+packaging/windows/notices/Rust-1.96.0-COPYRIGHT-library.txt     text eol=lf -whitespace
+packaging/windows/third-party-inventory.json                    text eol=lf
+packaging/windows/third-party-notices-policy.json               text eol=lf
+scripts/windows-third-party-notices.ps1                         text eol=lf

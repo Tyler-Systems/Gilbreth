@@ -1,0 +1,46 @@
+#!/usr/bin/env sh
+# Fast local gate: Rust formatting plus Python formatting/lint when staged
+# operational Python changed. The heavier test/clippy gate runs on pre-push.
+# Enable for this clone with:
+#   git config core.hooksPath .githooks
+# Bypass once with: git commit --no-verify
+set -e
+
+need_operational_python=0
+files=$(git diff --cached --name-only --diff-filter=ACMR)
+while IFS= read -r f; do
+    [ -z "$f" ] && continue
+    case "$f" in
+        scripts/*.py) need_operational_python=1 ;;
+    esac
+done <<EOF
+$files
+EOF
+
+if [ "$need_operational_python" -eq 1 ]; then
+    # Prefer an activated virtualenv, then the repository .venv where
+    # black/ruff live, then python3, then python. Bare `python` is not
+    # required; a plain python3 may lack the tooling.
+    repo_root=$(git rev-parse --show-toplevel 2>/dev/null || echo .)
+    # A candidate must actually RUN, not merely exist on PATH. Windows ships
+    # App Execution Alias stubs for python/python3 that resolve fine under
+    # `command -v` and then fail with "Python was not found", so probe each
+    # candidate. Windows venvs put the interpreter under Scripts/, not bin/.
+    PY=""
+    for candidate in         "${VIRTUAL_ENV:+$VIRTUAL_ENV/bin/python}"         "${VIRTUAL_ENV:+$VIRTUAL_ENV/Scripts/python.exe}"         "$repo_root/.venv/bin/python"         "$repo_root/.venv/Scripts/python.exe"         python3 python
+    do
+        [ -n "$candidate" ] || continue
+        if "$candidate" -c "" >/dev/null 2>&1; then
+            PY="$candidate"
+            break
+        fi
+    done
+    if [ -z "$PY" ]; then
+        echo "[gate] no working Python found; need python3 or a venv with black/ruff"
+        exit 1
+    fi
+    "$PY" -m black --check scripts
+    "$PY" -m ruff check scripts
+fi
+
+cargo fmt --all --check

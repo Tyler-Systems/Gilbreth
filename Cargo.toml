@@ -1,0 +1,100 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/gilbreth-app",
+    "crates/gilbreth-capture-macos",
+    "crates/gilbreth-capture-windows",
+    "crates/gilbreth-core",
+    "crates/gilbreth-dashboard",
+    "crates/gilbreth-read",
+    "crates/gilbreth-store",
+]
+
+[workspace.package]
+version = "0.1.1"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+
+[workspace.dependencies]
+aead = { version = "0.5", features = ["stream"] }
+aes-gcm = "0.10"
+anyhow = "1"
+argon2 = "0.5"
+chrono = "0.4"
+crossbeam-channel = "0.5"
+# S4 UI stack: exact-pinned per the eframe pinning policy (ROADMAP S4) —
+# upgrades are scheduled work with kittest snapshots as the churn detector.
+eframe = { version = "=0.35.0", features = ["persistence"] }
+egui = "=0.35.0"
+egui_kittest = { version = "=0.35.0", features = ["eframe", "snapshot", "wgpu"] }
+# ICU 75 / Unicode 15.1 has the same full casefold mappings as the frozen
+# Python 3.12 / Unicode 15.0 oracle. Keep exact until that oracle advances.
+icu_casemap = "=1.5.1"
+icu_casemap_data = "=1.5.1"
+libc = "0.2"
+# Mac framework bindings: the objc2 family is already in the tree via
+# eframe/winit, so these add no new vendor lineage to the workspace.
+# objc2-application-services was not previously in the tree and brings two
+# same-org transitive deps (objc2-core-services, objc2-security); all three
+# come from the same generator and org as the rest of the family (madsmtm/
+# objc2), so the vendor lineage is unchanged — recorded with the
+# Windows-titles slice, count corrected by its review round.
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = [
+    "NSAlert",
+    "NSApplication",
+    "NSButton",
+    "NSControl",
+    "NSEvent",
+    "NSPasteboard",
+    "NSResponder",
+    "NSRunningApplication",
+    "NSView",
+    "NSWorkspace",
+] }
+objc2-application-services = { version = "0.3", features = [
+    "AXError",
+    "AXUIElement",
+] }
+objc2-core-foundation = { version = "0.3", features = ["CFMachPort", "CFRunLoop"] }
+# Power slice: sleep/wake via IORegisterForSystemPower (pwr_mgt) + the
+# AC/battery snapshot via IOPowerSources (ps); "libc" gates the callback
+# type. Same generator and org as the rest of the family (madsmtm/objc2) —
+# vendor lineage unchanged, the application-services precedent.
+objc2-io-kit = { version = "0.3", features = ["libc", "ps", "pwr_mgt"] }
+objc2-core-graphics = { version = "0.3", features = [
+    "CGDirectDisplay",
+    "CGError",
+    "CGEvent",
+    "CGEventSource",
+    "CGEventTypes",
+    "CGSession",
+] }
+objc2-foundation = { version = "0.3", features = [
+    "NSDate",
+    "NSError",
+    "NSProcessInfo",
+    "NSRunLoop",
+    "NSString",
+    "NSURL",
+] }
+# Shell-remainders slice: SMAppService login-item registration. Same
+# generator and org as the rest of the family (madsmtm/objc2) — vendor
+# lineage unchanged, the application-services precedent.
+objc2-service-management = { version = "0.3", features = ["SMAppService"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
+rusqlite_migration = "2"
+regex = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tempfile = "3"
+thiserror = "2"
+toml = "0.9"
+toml_edit = "0.22"
+tracing = "0.1"
+tracing-appender = "0.2"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tray-icon = "0.24"
+uuid = { version = "1", features = ["v4"] }
+windows = "0.62"

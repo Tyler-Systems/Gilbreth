@@ -1,0 +1,27 @@
+[package]
+name = "gilbreth-dashboard"
+description = "Native egui dashboard shell (S4): BRAND theme, charts module, Today tab"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+eframe.workspace = true
+egui.workspace = true
+gilbreth-read = { path = "../gilbreth-read" }
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+egui_kittest.workspace = true
+# The shared product-copy style law (Lane B enforcement); tests only —
+# the runtime crate keeps its dependency surface unchanged.
+gilbreth-core = { path = "../gilbreth-core" }
+# Fixture databases with the canonical migrated schema; tests only — the
+# runtime crate stays store-free (C3 boundary discipline).
+gilbreth-store = { path = "../gilbreth-store" }
+tempfile.workspace = true

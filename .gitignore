@@ -1,0 +1,30 @@
+# Python
+__pycache__
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+
+# Environments
+.env
+.venv
+
+# Editor
+.vscode
+
+# Local agent/session tooling (never commit session permissions or scratch state)
+.claude/
+.agents/
+
+# Runtime data / build artifacts
+logs
+target
+dist/
+*.log*
+
+# SQLite databases
+*.db
+*.db-wal
+*.db-shm
+/dist/

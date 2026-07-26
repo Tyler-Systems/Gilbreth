@@ -1,0 +1,94 @@
+{
+  "metadata": {
+    "schema": "gilbreth.replay_export.v1",
+    "schema_version": "1.1",
+    "value_free": true,
+    "generated_ts": "1970-01-01T00:00:10.000Z",
+    "record_session_id": 20,
+    "title": null,
+    "app_allowlist": [
+      "msedge.exe"
+    ],
+    "mode": "agent_grounded",
+    "verdict": {
+      "state": "agent_grounded_only",
+      "export_available": false,
+      "coverage_line": "Agent-grounded only -- 1 web/virtualized actionable steps among 1 actionable steps."
+    },
+    "source": {
+      "app_version": "0.1.0",
+      "git_sha": "abc123"
+    },
+    "review_labels": {
+      "included": false,
+      "source": "human_entered_at_export_time",
+      "max_chars": 120
+    }
+  },
+  "steps": [
+    {
+      "seq": 1,
+      "offset_ms_from_recording_start": 500,
+      "action_type": "invoke",
+      "pattern_action": "invoke",
+      "intent": "Invoke the button.",
+      "framework_class": "web_renderer",
+      "trust_basis": "pid_match",
+      "exe": "msedge.exe",
+      "replay_class": "agent_grounded_hard_veto",
+      "native_replayable": false,
+      "selector": {
+        "backend": "uia",
+        "hops": [
+          {
+            "control_type": 50032,
+            "control_type_label": "window",
+            "automation_id": "root",
+            "class_name": "Notepad",
+            "ordinal": 0
+          },
+          {
+            "control_type": 50000,
+            "control_type_label": "button",
+            "automation_id": "safe_web",
+            "class_name": "Button",
+            "ordinal": 1
+          }
+        ],
+        "path_hash": "web-safe",
+        "leaf_rect": {
+          "left": 10,
+          "top": 20,
+          "right": 30,
+          "bottom": 40
+        }
+      },
+      "input_slot_ref": null,
+      "review_label": null
+    },
+    {
+      "seq": 2,
+      "offset_ms_from_recording_start": 1000,
+      "action_type": "edit_committed",
+      "pattern_action": null,
+      "intent": "Provide the runtime input for this step.",
+      "framework_class": "web_renderer",
+      "trust_basis": "pid_match",
+      "exe": "msedge.exe",
+      "replay_class": "free_input",
+      "native_replayable": false,
+      "selector": null,
+      "input_slot_ref": "input_1",
+      "review_label": null
+    }
+  ],
+  "input_slots": [
+    {
+      "slot_id": "input_1",
+      "at_step_seq": 2,
+      "role": "input",
+      "type": "string",
+      "target_selector_ref": null
+    }
+  ]
+}

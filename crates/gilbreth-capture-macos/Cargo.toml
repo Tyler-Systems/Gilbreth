@@ -1,0 +1,26 @@
+[package]
+name = "gilbreth-capture-macos"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+crossbeam-channel.workspace = true
+gilbreth-core = { path = "../gilbreth-core" }
+tracing.workspace = true
+
+# Target-gated like gilbreth-capture-windows's Win32 bindings: the crate is
+# an empty shell off-platform, and its framework deps must stay out of
+# non-mac workspace builds.
+[target.'cfg(target_os = "macos")'.dependencies]
+libc.workspace = true
+objc2.workspace = true
+objc2-app-kit.workspace = true
+objc2-application-services.workspace = true
+objc2-core-foundation.workspace = true
+objc2-core-graphics.workspace = true
+objc2-foundation.workspace = true
+objc2-io-kit.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

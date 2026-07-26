@@ -1,0 +1,769 @@
+{
+  "schemaVersion": 1,
+  "rootPackage": "gilbreth-app",
+  "targetTriple": "x86_64-pc-windows-msvc",
+  "dependencyKinds": [
+    "normal",
+    "build"
+  ],
+  "expectedCounts": {
+    "workspacePackages": 6,
+    "externalNormalPackages": 263,
+    "externalBuildOnlyPackages": 20,
+    "externalNonDevPackages": 283
+  },
+  "inventoryPath": "packaging/windows/third-party-inventory.json",
+  "noticePath": "docs/THIRD-PARTY-NOTICES.md",
+  "releaseConfigPath": "packaging/windows/release-config.json",
+  "packageRules": [
+    {
+      "package": "accesskit@0.24.1",
+      "fallback": {
+        "kind": "repo",
+        "path": "packaging/windows/notices/AccessKit-LICENSE-MIT.txt",
+        "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+        "sourceRepository": "https://github.com/AccessKit/accesskit",
+        "sourceRevision": "a55d3e1a18bb9ef0e4bccc9083fb13c3e0ad8969",
+        "sourcePath": "LICENSE-MIT"
+      },
+      "packageSource": {
+        "repository": "https://github.com/AccessKit/accesskit",
+        "primaryRepository": "https://github.com/AccessKit/accesskit",
+        "revision": "a55d3e1a18bb9ef0e4bccc9083fb13c3e0ad8969",
+        "pathInVcs": "common"
+      },
+      "extraLicenseFiles": [
+        {
+          "path": "LICENSE-APACHE",
+          "repoPath": "packaging/windows/notices/AccessKit-LICENSE-APACHE.txt",
+          "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a",
+          "sourceRepository": "https://github.com/AccessKit/accesskit",
+          "sourceRevision": "a55d3e1a18bb9ef0e4bccc9083fb13c3e0ad8969",
+          "sourcePath": "LICENSE-APACHE"
+        },
+        {
+          "path": "AUTHORS",
+          "repoPath": "packaging/windows/notices/AccessKit-AUTHORS.txt",
+          "sha256": "3bab8c36f6a85657504aaefb37c7ff34e29b8c917290f3d28a1f0920c992e502",
+          "sourceRepository": "https://github.com/AccessKit/accesskit",
+          "sourceRevision": "a55d3e1a18bb9ef0e4bccc9083fb13c3e0ad8969",
+          "sourcePath": "AUTHORS"
+        },
+        {
+          "path": "LICENSE.chromium",
+          "repoPath": "packaging/windows/notices/AccessKit-LICENSE.chromium.txt",
+          "sha256": "845022e0c1db1abb41a6ba4cd3c4b674ec290f3359d9d3c78ae558d4c0ed9308",
+          "sourceRepository": "https://github.com/AccessKit/accesskit",
+          "sourceRevision": "a55d3e1a18bb9ef0e4bccc9083fb13c3e0ad8969",
+          "sourcePath": "LICENSE.chromium"
+        }
+      ]
+    },
+    {
+      "package": "accesskit_consumer@0.35.0",
+      "fallback": {
+        "kind": "repo",
+        "path": "packaging/windows/notices/AccessKit-LICENSE-MIT.txt",
+        "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+        "sourceRepository": "https://github.com/AccessKit/accesskit",
+        "sourceRevision": "1bbcf100942bac96c2c3a4a91cb67b0b20201a24",
+        "sourcePath": "LICENSE-MIT"
+      },
+      "packageSource": {
+        "repository": "https://github.com/AccessKit/accesskit",
+        "primaryRepository": "https://github.com/AccessKit/accesskit",
+        "revision": "1bbcf100942bac96c2c3a4a91cb67b0b20201a24",
+        "pathInVcs": "consumer"
+      },
+      "extraLicenseFiles": [
+        {
+          "path": "LICENSE-APACHE",
+          "repoPath": "packaging/windows/notices/AccessKit-LICENSE-APACHE.txt",
+          "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a",
+          "sourceRepository": "https://github.com/AccessKit/accesskit",
+          "sourceRevision": "1bbcf100942bac96c2c3a4a91cb67b0b20201a24",
+          "sourcePath": "LICENSE-APACHE"
+        },
+        {
+          "path": "AUTHORS",
+          "repoPath": "packaging/windows/notices/AccessKit-AUTHORS.txt",
+          "sha256": "3bab8c36f6a85657504aaefb37c7ff34e29b8c917290f3d28a1f0920c992e502",
+          "sourceRepository": "https://github.com/AccessKit/accesskit",
+          "sourceRevision": "1bbcf100942bac96c2c3a4a91cb67b0b20201a24",
+          "sourcePath": "AUTHORS"
+        },
+        {
+          "path": "LICENSE.chromium",
+          "repoPath": "packaging/windows/notices/AccessKit-LICENSE.chromium.txt",
+          "sha256": "845022e0c1db1abb41a6ba4cd3c4b674ec290f3359d9d3c78ae558d4c0ed9308",
+          "sourceRepository": "https://github.com/AccessKit/accesskit",
+          "sourceRevision": "1bbcf100942bac96c2c3a4a91cb67b0b20201a24",
+          "sourcePath": "LICENSE.chromium"
+        }
+      ]
+    },
+    {
+      "package": "accesskit_windows@0.32.1",
+      "fallback": {
+        "kind": "repo",
+        "path": "packaging/windows/notices/AccessKit-LICENSE-MIT.txt",
+        "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+        "sourceRepository": "https://github.com/AccessKit/accesskit",
+        "sourceRevision": "1bbcf100942bac96c2c3a4a91cb67b0b20201a24",
+        "sourcePath": "LICENSE-MIT"
+      },
+      "packageSource": {
+        "repository": "https://github.com/AccessKit/accesskit",
+        "primaryRepository": "https://github.com/AccessKit/accesskit",
+        "revision": "1bbcf100942bac96c2c3a4a91cb67b0b20201a24",
+        "pathInVcs": "platforms/windows"
+      },
+      "extraLicenseFiles": [
+        {
+          "path": "LICENSE-APACHE",
+          "repoPath": "packaging/windows/notices/AccessKit-LICENSE-APACHE.txt",
+          "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a",
+          "sourceRepository": "https://github.com/AccessKit/accesskit",
+          "sourceRevision": "1bbcf100942bac96c2c3a4a91cb67b0b20201a24",
+          "sourcePath": "LICENSE-APACHE"
+        },
+        {
+          "path": "AUTHORS",
+          "repoPath": "packaging/windows/notices/AccessKit-AUTHORS.txt",
+          "sha256": "3bab8c36f6a85657504aaefb37c7ff34e29b8c917290f3d28a1f0920c992e502",
+          "sourceRepository": "https://github.com/AccessKit/accesskit",
+          "sourceRevision": "1bbcf100942bac96c2c3a4a91cb67b0b20201a24",
+          "sourcePath": "AUTHORS"
+        },
+        {
+          "path": "LICENSE.chromium",
+          "repoPath": "packaging/windows/notices/AccessKit-LICENSE.chromium.txt",
+          "sha256": "845022e0c1db1abb41a6ba4cd3c4b674ec290f3359d9d3c78ae558d4c0ed9308",
+          "sourceRepository": "https://github.com/AccessKit/accesskit",
+          "sourceRevision": "1bbcf100942bac96c2c3a4a91cb67b0b20201a24",
+          "sourcePath": "LICENSE.chromium"
+        }
+      ]
+    },
+    {
+      "package": "accesskit_winit@0.32.2",
+      "fallback": {
+        "kind": "repo",
+        "path": "packaging/windows/notices/AccessKit-LICENSE-APACHE.txt",
+        "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a",
+        "sourceRepository": "https://github.com/AccessKit/accesskit",
+        "sourceRevision": "1bbcf100942bac96c2c3a4a91cb67b0b20201a24",
+        "sourcePath": "LICENSE-APACHE"
+      },
+      "packageSource": {
+        "repository": "https://github.com/AccessKit/accesskit",
+        "primaryRepository": "https://github.com/AccessKit/accesskit",
+        "revision": "1bbcf100942bac96c2c3a4a91cb67b0b20201a24",
+        "pathInVcs": "platforms/winit"
+      },
+      "extraLicenseFiles": [
+        {
+          "path": "AUTHORS",
+          "repoPath": "packaging/windows/notices/AccessKit-AUTHORS.txt",
+          "sha256": "3bab8c36f6a85657504aaefb37c7ff34e29b8c917290f3d28a1f0920c992e502",
+          "sourceRepository": "https://github.com/AccessKit/accesskit",
+          "sourceRevision": "1bbcf100942bac96c2c3a4a91cb67b0b20201a24",
+          "sourcePath": "AUTHORS"
+        }
+      ]
+    },
+    {
+      "package": "clipboard-win@5.4.1",
+      "fallback": {
+        "kind": "repo",
+        "path": "packaging/windows/notices/clipboard-win-LICENSE.txt",
+        "sha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+        "sourceRepository": "https://github.com/DoumanAsh/clipboard-win",
+        "sourceRevision": "3b27cf2bfd1adcfa6e0264eb51c1025ddaf0f342",
+        "sourcePath": "LICENSE"
+      },
+      "packageSource": {
+        "repository": "https://github.com/DoumanAsh/clipboard-win",
+        "primaryRepository": "https://github.com/DoumanAsh/clipboard-win",
+        "revision": "3b27cf2bfd1adcfa6e0264eb51c1025ddaf0f342",
+        "pathInVcs": ""
+      }
+    },
+    {
+      "package": "ecolor@0.35.0",
+      "fallback": {
+        "kind": "repo",
+        "path": "packaging/windows/notices/egui-LICENSE-MIT.txt",
+        "sha256": "95ca92f5f8ea5231f1580b3a2a799e8260af3114b900e1def5355a7f44bcf60c",
+        "sourceRepository": "https://github.com/emilk/egui",
+        "sourceRevision": "6f15dc0e16b26edce1fc2a05212eaf7e749c1d05",
+        "sourcePath": "LICENSE-MIT"
+      },
+      "packageSource": {
+        "repository": "https://github.com/emilk/egui",
+        "primaryRepository": "https://github.com/emilk/egui",
+        "revision": "6f15dc0e16b26edce1fc2a05212eaf7e749c1d05",
+        "pathInVcs": "crates/ecolor"
+      },
+      "extraLicenseFiles": [
+        {
+          "path": "LICENSE-APACHE",
+          "repoPath": "packaging/windows/notices/egui-LICENSE-APACHE.txt",
+          "sha256": "8173d5c29b4f956d532781d2b86e4e30f83e6b7878dce18c919451d6ba707c90",
+          "sourceRepository": "https://github.com/emilk/egui",
+          "sourceRevision": "6f15dc0e16b26edce1fc2a05212eaf7e749c1d05",
+          "sourcePath": "LICENSE-APACHE"
+        }
+      ]
+    },
+    {
+      "package": "eframe@0.35.0",
+      "fallback": {
+        "kind": "repo",
+        "path": "packaging/windows/notices/egui-LICENSE-MIT.txt",
+        "sha256": "95ca92f5f8ea5231f1580b3a2a799e8260af3114b900e1def5355a7f44bcf60c",
+        "sourceRepository": "https://github.com/emilk/egui",
+        "sourceRevision": "6f15dc0e16b26edce1fc2a05212eaf7e749c1d05",
+        "sourcePath": "LICENSE-MIT"
+      },
+      "packageSource": {
+        "repository": "https://github.com/emilk/egui/tree/main/crates/eframe",
+        "primaryRepository": "https://github.com/emilk/egui",
+        "revision": "6f15dc0e16b26edce1fc2a05212eaf7e749c1d05",
+        "pathInVcs": "crates/eframe"
+      },
+      "extraLicenseFiles": [
+        {
+          "path": "LICENSE-APACHE",
+          "repoPath": "packaging/windows/notices/egui-LICENSE-APACHE.txt",
+          "sha256": "8173d5c29b4f956d532781d2b86e4e30f83e6b7878dce18c919451d6ba707c90",
+          "sourceRepository": "https://github.com/emilk/egui",
+          "sourceRevision": "6f15dc0e16b26edce1fc2a05212eaf7e749c1d05",
+          "sourcePath": "LICENSE-APACHE"
+        }
+      ]
+    },
+    {
+      "package": "egui@0.35.0",
+      "fallback": {
+        "kind": "repo",
+        "path": "packaging/windows/notices/egui-LICENSE-MIT.txt",
+        "sha256": "95ca92f5f8ea5231f1580b3a2a799e8260af3114b900e1def5355a7f44bcf60c",
+        "sourceRepository": "https://github.com/emilk/egui",
+        "sourceRevision": "6f15dc0e16b26edce1fc2a05212eaf7e749c1d05",
+        "sourcePath": "LICENSE-MIT"
+      },
+      "packageSource": {
+        "repository": "https://github.com/emilk/egui",
+        "primaryRepository": "https://github.com/emilk/egui",
+        "revision": "6f15dc0e16b26edce1fc2a05212eaf7e749c1d05",
+        "pathInVcs": "crates/egui"
+      },
+      "extraLicenseFiles": [
+        {
+          "path": "LICENSE-APACHE",
+          "repoPath": "packaging/windows/notices/egui-LICENSE-APACHE.txt",
+          "sha256": "8173d5c29b4f956d532781d2b86e4e30f83e6b7878dce18c919451d6ba707c90",
+          "sourceRepository": "https://github.com/emilk/egui",
+          "sourceRevision": "6f15dc0e16b26edce1fc2a05212eaf7e749c1d05",
+          "sourcePath": "LICENSE-APACHE"
+        }
+      ]
+    },
+    {
+      "package": "egui-wgpu@0.35.0",
+      "fallback": {
+        "kind": "repo",
+        "path": "packaging/windows/notices/egui-LICENSE-MIT.txt",
+        "sha256": "95ca92f5f8ea5231f1580b3a2a799e8260af3114b900e1def5355a7f44bcf60c",
+        "sourceRepository": "https://github.com/emilk/egui",
+        "sourceRevision": "6f15dc0e16b26edce1fc2a05212eaf7e749c1d05",
+        "sourcePath": "LICENSE-MIT"
+      },
+      "packageSource": {
+        "repository": "https://github.com/emilk/egui/tree/main/crates/egui-wgpu",
+        "primaryRepository": "https://github.com/emilk/egui",
+        "revision": "6f15dc0e16b26edce1fc2a05212eaf7e749c1d05",
+        "pathInVcs": "crates/egui-wgpu"
+      },
+      "extraLicenseFiles": [
+        {
+          "path": "LICENSE-APACHE",
+          "repoPath": "packaging/windows/notices/egui-LICENSE-APACHE.txt",
+          "sha256": "8173d5c29b4f956d532781d2b86e4e30f83e6b7878dce18c919451d6ba707c90",
+          "sourceRepository": "https://github.com/emilk/egui",
+          "sourceRevision": "6f15dc0e16b26edce1fc2a05212eaf7e749c1d05",
+          "sourcePath": "LICENSE-APACHE"
+        }
+      ]
+    },
+    {
+      "package": "egui-winit@0.35.0",
+      "fallback": {
+        "kind": "repo",
+        "path": "packaging/windows/notices/egui-LICENSE-MIT.txt",
+        "sha256": "95ca92f5f8ea5231f1580b3a2a799e8260af3114b900e1def5355a7f44bcf60c",
+        "sourceRepository": "https://github.com/emilk/egui",
+        "sourceRevision": "6f15dc0e16b26edce1fc2a05212eaf7e749c1d05",
+        "sourcePath": "LICENSE-MIT"
+      },
+      "packageSource": {
+        "repository": "https://github.com/emilk/egui/tree/main/crates/egui-winit",
+        "primaryRepository": "https://github.com/emilk/egui",
+        "revision": "6f15dc0e16b26edce1fc2a05212eaf7e749c1d05",
+        "pathInVcs": "crates/egui-winit"
+      },
+      "extraLicenseFiles": [
+        {
+          "path": "LICENSE-APACHE",
+          "repoPath": "packaging/windows/notices/egui-LICENSE-APACHE.txt",
+          "sha256": "8173d5c29b4f956d532781d2b86e4e30f83e6b7878dce18c919451d6ba707c90",
+          "sourceRepository": "https://github.com/emilk/egui",
+          "sourceRevision": "6f15dc0e16b26edce1fc2a05212eaf7e749c1d05",
+          "sourcePath": "LICENSE-APACHE"
+        }
+      ]
+    },
+    {
+      "package": "emath@0.35.0",
+      "fallback": {
+        "kind": "repo",
+        "path": "packaging/windows/notices/egui-LICENSE-MIT.txt",
+        "sha256": "95ca92f5f8ea5231f1580b3a2a799e8260af3114b900e1def5355a7f44bcf60c",
+        "sourceRepository": "https://github.com/emilk/egui",
+        "sourceRevision": "6f15dc0e16b26edce1fc2a05212eaf7e749c1d05",
+        "sourcePath": "LICENSE-MIT"
+      },
+      "packageSource": {
+        "repository": "https://github.com/emilk/egui/tree/main/crates/emath",
+        "primaryRepository": "https://github.com/emilk/egui",
+        "revision": "6f15dc0e16b26edce1fc2a05212eaf7e749c1d05",
+        "pathInVcs": "crates/emath"
+      },
+      "extraLicenseFiles": [
+        {
+          "path": "LICENSE-APACHE",
+          "repoPath": "packaging/windows/notices/egui-LICENSE-APACHE.txt",
+          "sha256": "8173d5c29b4f956d532781d2b86e4e30f83e6b7878dce18c919451d6ba707c90",
+          "sourceRepository": "https://github.com/emilk/egui",
+          "sourceRevision": "6f15dc0e16b26edce1fc2a05212eaf7e749c1d05",
+          "sourcePath": "LICENSE-APACHE"
+        }
+      ]
+    },
+    {
+      "package": "epaint@0.35.0",
+      "fallback": {
+        "kind": "repo",
+        "path": "packaging/windows/notices/egui-LICENSE-MIT.txt",
+        "sha256": "95ca92f5f8ea5231f1580b3a2a799e8260af3114b900e1def5355a7f44bcf60c",
+        "sourceRepository": "https://github.com/emilk/egui",
+        "sourceRevision": "6f15dc0e16b26edce1fc2a05212eaf7e749c1d05",
+        "sourcePath": "LICENSE-MIT"
+      },
+      "packageSource": {
+        "repository": "https://github.com/emilk/egui/tree/main/crates/epaint",
+        "primaryRepository": "https://github.com/emilk/egui",
+        "revision": "6f15dc0e16b26edce1fc2a05212eaf7e749c1d05",
+        "pathInVcs": "crates/epaint"
+      },
+      "extraLicenseFiles": [
+        {
+          "path": "LICENSE-APACHE",
+          "repoPath": "packaging/windows/notices/egui-LICENSE-APACHE.txt",
+          "sha256": "8173d5c29b4f956d532781d2b86e4e30f83e6b7878dce18c919451d6ba707c90",
+          "sourceRepository": "https://github.com/emilk/egui",
+          "sourceRevision": "6f15dc0e16b26edce1fc2a05212eaf7e749c1d05",
+          "sourcePath": "LICENSE-APACHE"
+        }
+      ]
+    },
+    {
+      "package": "epaint_default_fonts@0.35.0",
+      "fallback": {
+        "kind": "repo",
+        "path": "packaging/windows/notices/egui-LICENSE-MIT.txt",
+        "sha256": "95ca92f5f8ea5231f1580b3a2a799e8260af3114b900e1def5355a7f44bcf60c",
+        "sourceRepository": "https://github.com/emilk/egui",
+        "sourceRevision": "6f15dc0e16b26edce1fc2a05212eaf7e749c1d05",
+        "sourcePath": "LICENSE-MIT"
+      },
+      "extraLicenseFiles": [
+        {
+          "path": "LICENSE-APACHE",
+          "repoPath": "packaging/windows/notices/egui-LICENSE-APACHE.txt",
+          "sha256": "8173d5c29b4f956d532781d2b86e4e30f83e6b7878dce18c919451d6ba707c90",
+          "sourceRepository": "https://github.com/emilk/egui",
+          "sourceRevision": "6f15dc0e16b26edce1fc2a05212eaf7e749c1d05",
+          "sourcePath": "LICENSE-APACHE"
+        },
+        {
+          "path": "README.md (Ubuntu-Light.ttf credit)",
+          "repoPath": "packaging/windows/notices/egui-Ubuntu-font-credit.txt",
+          "sha256": "0afd6c0e0f5f28eba96fe0dc33f91f75e557471dc79f49dee26505ba62d99c70",
+          "sourceRepository": "https://github.com/emilk/egui",
+          "sourceRevision": "6f15dc0e16b26edce1fc2a05212eaf7e749c1d05",
+          "sourcePath": "README.md:367"
+        },
+        {
+          "path": "fonts/Hack-Regular.txt",
+          "sha256": "47c0cccbeec7e8614548cc485588b28149e7874188df5f41b36efebcee285c87"
+        },
+        {
+          "path": "fonts/NotoEmoji-NOTICE.txt",
+          "repoPath": "packaging/windows/notices/NotoEmoji-NOTICE.txt",
+          "sha256": "72cd3024298a822848d4d57fba370cc6d1d724352a66f447f39d46dd1de5948e",
+          "sourceRepository": "https://github.com/emilk/egui",
+          "sourceRevision": "6f15dc0e16b26edce1fc2a05212eaf7e749c1d05",
+          "sourcePath": "crates/epaint_default_fonts/fonts/NotoEmoji-Regular.ttf (copyright metadata)"
+        },
+        {
+          "path": "fonts/OFL.txt",
+          "sha256": "6a73f9541c2de74158c0e7cf6b0a58ef774f5a780bf191f2d7ec9cc53efe2bf2"
+        },
+        {
+          "path": "fonts/UFL.txt",
+          "sha256": "2f0015108d68627bd788d313f529c21ff4da2c2c42a5e1f3883acc83480f9002"
+        },
+        {
+          "path": "fonts/emoji-icon-font-mit-license.txt",
+          "sha256": "b9d2c1d909aa149996fd4c91dcb92b2362a04431640c1d200959da94caf8cde1"
+        }
+      ],
+      "embeddedAssets": [
+        {
+          "path": "fonts/Hack-Regular.ttf",
+          "sha256": "15f55cc0c85a2988d2b4b3a8cdb5d77fdfbaf319e1bb5309d725db9818fb7125"
+        },
+        {
+          "path": "fonts/NotoEmoji-Regular.ttf",
+          "sha256": "415dc6290378574135b64c808dc640c1df7531973290c4970c51fdeb849cb0c5"
+        },
+        {
+          "path": "fonts/Ubuntu-Light.ttf",
+          "sha256": "80307b8da7649aa4ee4d484b232140e3ce1ec0ca093073d3c53c8f5a5ced7a70"
+        },
+        {
+          "path": "fonts/emoji-icon-font.ttf",
+          "sha256": "f426bec371f484646d002717e2c555a95cd5145e635d83a48bbef83f3abf18ca"
+        }
+      ],
+      "packageSource": {
+        "repository": "https://github.com/emilk/egui/tree/main/crates/epaint_default_fonts",
+        "primaryRepository": "https://github.com/emilk/egui",
+        "revision": "6f15dc0e16b26edce1fc2a05212eaf7e749c1d05",
+        "pathInVcs": "crates/epaint_default_fonts"
+      }
+    },
+    {
+      "package": "gl_generator@0.14.0",
+      "fallback": {
+        "kind": "repo",
+        "path": "packaging/windows/notices/gl-rs-LICENSE.txt",
+        "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+        "sourceRepository": "https://github.com/brendanzab/gl-rs",
+        "sourceRevision": "ea503e8d5fb6d73c6030e6191ce738cd3bf3433e",
+        "sourcePath": "LICENSE"
+      },
+      "packageSource": {
+        "repository": "https://github.com/brendanzab/gl-rs/",
+        "primaryRepository": "https://github.com/brendanzab/gl-rs",
+        "revision": "ea503e8d5fb6d73c6030e6191ce738cd3bf3433e",
+        "pathInVcs": ""
+      }
+    },
+    {
+      "package": "gpu-descriptor@0.3.2",
+      "fallback": {
+        "kind": "repo",
+        "path": "packaging/windows/notices/gpu-descriptor-LICENSE-MIT.txt",
+        "sha256": "5de386d4f96fd0962c1eb96c9cc888168691abb45cd30b01afd283093249ae5e",
+        "sourceRepository": "https://github.com/zakarumych/gpu-descriptor",
+        "sourceRevision": "bb28b4e55b742e0ea3e7a0968e7ee6287ba0e06a",
+        "sourcePath": "license/MIT"
+      },
+      "packageSource": {
+        "repository": "https://github.com/zakarumych/gpu-descriptor",
+        "primaryRepository": "https://github.com/zakarumych/gpu-descriptor",
+        "revision": "bb28b4e55b742e0ea3e7a0968e7ee6287ba0e06a",
+        "pathInVcs": "gpu-descriptor"
+      },
+      "extraLicenseFiles": [
+        {
+          "path": "license/APACHE",
+          "repoPath": "packaging/windows/notices/gpu-descriptor-LICENSE-APACHE.txt",
+          "sha256": "e30ae90f21ca09c8b4062da37c1efbfa4851ae73dbc10711c0aaef3cdedacfa7",
+          "sourceRepository": "https://github.com/zakarumych/gpu-descriptor",
+          "sourceRevision": "bb28b4e55b742e0ea3e7a0968e7ee6287ba0e06a",
+          "sourcePath": "license/APACHE"
+        },
+        {
+          "path": "COPYING",
+          "repoPath": "packaging/windows/notices/gpu-descriptor-COPYING.txt",
+          "sha256": "f72143f7e9d9fb8bd336b139fa22f825a299591c29f2f7338c5566347b137613",
+          "sourceRepository": "https://github.com/zakarumych/gpu-descriptor",
+          "sourceRevision": "bb28b4e55b742e0ea3e7a0968e7ee6287ba0e06a",
+          "sourcePath": "COPYING"
+        }
+      ]
+    },
+    {
+      "package": "gpu-descriptor-types@0.2.0",
+      "fallback": {
+        "kind": "repo",
+        "path": "packaging/windows/notices/gpu-descriptor-LICENSE-MIT.txt",
+        "sha256": "5de386d4f96fd0962c1eb96c9cc888168691abb45cd30b01afd283093249ae5e",
+        "sourceRepository": "https://github.com/zakarumych/gpu-descriptor",
+        "sourceRevision": "9f2fb9546591322e7b77ee1e79385e01effd85e4",
+        "sourcePath": "license/MIT"
+      },
+      "packageSource": {
+        "repository": "https://github.com/zakarumych/gpu-descriptor",
+        "primaryRepository": "https://github.com/zakarumych/gpu-descriptor",
+        "revision": "9f2fb9546591322e7b77ee1e79385e01effd85e4",
+        "pathInVcs": "types"
+      },
+      "extraLicenseFiles": [
+        {
+          "path": "license/APACHE",
+          "repoPath": "packaging/windows/notices/gpu-descriptor-LICENSE-APACHE.txt",
+          "sha256": "e30ae90f21ca09c8b4062da37c1efbfa4851ae73dbc10711c0aaef3cdedacfa7",
+          "sourceRepository": "https://github.com/zakarumych/gpu-descriptor",
+          "sourceRevision": "9f2fb9546591322e7b77ee1e79385e01effd85e4",
+          "sourcePath": "license/APACHE"
+        },
+        {
+          "path": "COPYING",
+          "repoPath": "packaging/windows/notices/gpu-descriptor-COPYING.txt",
+          "sha256": "f72143f7e9d9fb8bd336b139fa22f825a299591c29f2f7338c5566347b137613",
+          "sourceRepository": "https://github.com/zakarumych/gpu-descriptor",
+          "sourceRevision": "9f2fb9546591322e7b77ee1e79385e01effd85e4",
+          "sourcePath": "COPYING"
+        }
+      ]
+    },
+    {
+      "package": "hexf-parse@0.2.1",
+      "packageSource": {
+        "repository": "https://github.com/lifthrasiir/hexf",
+        "primaryRepository": "https://github.com/lifthrasiir/hexf",
+        "revision": "4225763d744183d720f575ae96d04161b4d08ea0",
+        "pathInVcs": ""
+      },
+      "fallback": {
+        "kind": "repo",
+        "path": "packaging/windows/notices/CC0-1.0-hexf-parse.txt",
+        "sha256": "a2010f343487d3f7618affe54f789f5487602331c0a8d03f49e9a7c547cf0499",
+        "sourceRepository": "https://github.com/lifthrasiir/hexf",
+        "sourceRevision": "4225763d744183d720f575ae96d04161b4d08ea0",
+        "sourcePath": "Cargo.toml (CC0-1.0 declaration)",
+        "legalTextSource": "https://creativecommons.org/publicdomain/zero/1.0/legalcode.txt"
+      }
+    },
+    {
+      "package": "khronos_api@3.1.0",
+      "fallback": {
+        "kind": "repo",
+        "path": "packaging/windows/notices/gl-rs-LICENSE.txt",
+        "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+        "sourceRepository": "https://github.com/brendanzab/gl-rs",
+        "sourceRevision": "f150967b1c44ae888e6676f93f639ebc82771bdc",
+        "sourcePath": "LICENSE"
+      },
+      "packageSource": {
+        "repository": "https://github.com/brendanzab/gl-rs/",
+        "primaryRepository": "https://github.com/brendanzab/gl-rs",
+        "revision": "f150967b1c44ae888e6676f93f639ebc82771bdc",
+        "pathInVcs": ""
+      }
+    },
+    {
+      "package": "profiling@1.0.18",
+      "fallback": {
+        "kind": "repo",
+        "path": "packaging/windows/notices/profiling-LICENSE-MIT.txt",
+        "sha256": "e64891b51361725890d69bafa508ad013bc92aeef99054caecb6f5ce5f7dfd51",
+        "sourceRepository": "https://github.com/aclysma/profiling",
+        "sourceRevision": "8271551172eb6fa4cba47369aedd93790c623df9",
+        "sourcePath": "LICENSE-MIT"
+      },
+      "packageSource": {
+        "repository": "https://github.com/aclysma/profiling",
+        "primaryRepository": "https://github.com/aclysma/profiling",
+        "revision": "8271551172eb6fa4cba47369aedd93790c623df9",
+        "pathInVcs": "profiling"
+      },
+      "extraLicenseFiles": [
+        {
+          "path": "LICENSE-APACHE",
+          "repoPath": "packaging/windows/notices/profiling-LICENSE-APACHE.txt",
+          "sha256": "6ee32466aaa724095c99d108c8e549fb9e2bd2c5d81708afb1cd373b3177f7d2",
+          "sourceRepository": "https://github.com/aclysma/profiling",
+          "sourceRevision": "8271551172eb6fa4cba47369aedd93790c623df9",
+          "sourcePath": "LICENSE-APACHE"
+        }
+      ]
+    },
+    {
+      "package": "rusqlite_migration@2.6.0",
+      "fallback": {
+        "kind": "repo",
+        "path": "packaging/windows/notices/rusqlite_migration-LICENSE.txt",
+        "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+        "sourceRepository": "https://github.com/cljoly/rusqlite_migration",
+        "sourceRevision": "37c7a555018ecd80c58b2954779d83c281e4557a",
+        "sourcePath": "LICENSE.txt"
+      },
+      "packageSource": {
+        "repository": "https://github.com/cljoly/rusqlite_migration",
+        "primaryRepository": "https://github.com/cljoly/rusqlite_migration",
+        "revision": "37c7a555018ecd80c58b2954779d83c281e4557a",
+        "pathInVcs": "rusqlite_migration"
+      }
+    },
+    {
+      "package": "spirv@0.4.0+sdk-1.4.341.0",
+      "fallback": {
+        "kind": "repo",
+        "path": "packaging/windows/notices/rspirv-LICENSE.txt",
+        "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+        "sourceRepository": "https://github.com/gfx-rs/rspirv",
+        "sourceRevision": "8afc3d0ac8e158128cd1410bb2e4b4c26ab11bb4",
+        "sourcePath": "LICENSE"
+      },
+      "packageSource": {
+        "repository": "https://github.com/gfx-rs/rspirv",
+        "primaryRepository": "https://github.com/gfx-rs/rspirv",
+        "revision": "8afc3d0ac8e158128cd1410bb2e4b4c26ab11bb4",
+        "pathInVcs": "spirv"
+      }
+    },
+    {
+      "package": "self_cell@1.2.2",
+      "excludeTopLevelFiles": [
+        "LICENSE-GPLv2"
+      ]
+    },
+    {
+      "package": "regex-syntax@0.8.10",
+      "extraLicenseFiles": [
+        {
+          "path": "src/unicode_tables/LICENSE-UNICODE",
+          "sha256": "74db5baf44a41b1000312c673544b3374e4198af5605c7f9080a402cec42cfa3"
+        }
+      ]
+    },
+    {
+      "package": "tracing-core@0.1.36",
+      "extraLicenseFiles": [
+        {
+          "path": "src/spin/LICENSE",
+          "sha256": "58545fed1565e42d687aecec6897d35c6d37ccb71479a137c0deb2203e125c79"
+        }
+      ]
+    },
+    {
+      "package": "libsqlite3-sys@0.38.0",
+      "embeddedAssets": [
+        {
+          "path": "sqlite3/sqlite3.c",
+          "sha256": "9ac97192c93a6d9671d2ea667ba14e3c8fe3719a171afc5827c9d86d0278fc14"
+        },
+        {
+          "path": "sqlite3/sqlite3.h",
+          "sha256": "16d6e2f265fb13ece42329da39a865d4c540045b444d16b4bf9f7e1a7e39408f"
+        }
+      ]
+    }
+  ],
+  "manualComponents": [
+    {
+      "id": "inter-fonts",
+      "name": "Inter",
+      "version": "bundled project assets",
+      "license": "OFL-1.1",
+      "relationship": "embedded application fonts",
+      "noticePath": "crates/gilbreth-dashboard/assets/fonts/LICENSE-Inter.txt",
+      "noticeSha256": "262481e844521b326f5ecd053e59b98c8b2da78c8ee1bdbb6e8174305e54935a",
+      "assetFiles": [
+        {
+          "path": "crates/gilbreth-dashboard/assets/fonts/Inter-Regular.otf",
+          "sha256": "d4f2b9e148059a15f014cb0f0b8fea8cd11bfa447dd483bedf1b0adc0e2ba799"
+        },
+        {
+          "path": "crates/gilbreth-dashboard/assets/fonts/Inter-Medium.otf",
+          "sha256": "6c222ed2c3660524dd0c14fb745e00fee65c5361ab28f60fba6730bf4e648763"
+        },
+        {
+          "path": "crates/gilbreth-dashboard/assets/fonts/Inter-SemiBold.otf",
+          "sha256": "0a4d30778fa2dc239368d90fd854b88b27e7ede737450da72686a90eca66f02c"
+        }
+      ]
+    },
+    {
+      "id": "ibm-plex-mono-font",
+      "name": "IBM Plex Mono",
+      "version": "bundled project asset",
+      "license": "OFL-1.1",
+      "relationship": "embedded application font",
+      "noticePath": "crates/gilbreth-dashboard/assets/fonts/LICENSE-IBMPlexMono.txt",
+      "noticeSha256": "37784b44044a4ffd9256702b7c0982c37e5c8887ba90c6dca0479aea93dc898d",
+      "assetFiles": [
+        {
+          "path": "crates/gilbreth-dashboard/assets/fonts/IBMPlexMono-Regular.ttf",
+          "sha256": "6a3412f058c7d8dfd9170c41e85ade48e5156ecb89356110ca57a0a27734af46"
+        }
+      ]
+    },
+    {
+      "id": "rust-standard-library",
+      "name": "Rust standard library and runtime",
+      "version": "1.96.0",
+      "license": "Apache-2.0 OR MIT, including bundled third-party notices",
+      "relationship": "statically linked standard library and runtime",
+      "noticePath": "packaging/windows/notices/Rust-1.96.0-COPYRIGHT-library.txt",
+      "noticeSha256": "78c163fcec50e64bfd85fedb850c273595602fafa2b41f30f75d4e410b80ee83",
+      "provenance": {
+        "repository": "https://github.com/rust-lang/rust",
+        "revision": "ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96",
+        "toolchainPath": "share/doc/rust/COPYRIGHT-library.html"
+      }
+    },
+    {
+      "id": "inno-setup-runtime",
+      "name": "Inno Setup",
+      "version": "6.7.3",
+      "license": "Inno Setup License",
+      "relationship": "generated installer and installed uninstaller runtime",
+      "noticePath": "packaging/windows/notices/Inno-Setup-6.7.3.txt",
+      "noticeSha256": "0c81595601bce47eeef8d865d5da7f9ca2c6a12235b7482b29f5ab23ed02ee5a"
+    },
+    {
+      "id": "lzma-sdk",
+      "name": "LZMA SDK",
+      "version": "Inno Setup 6.7.3 component",
+      "license": "Public Domain",
+      "relationship": "installer LZMA2 compression/decompression code",
+      "noticePath": "packaging/windows/notices/LZMA-SDK.txt",
+      "noticeSha256": "7d8197f3ade1c2080388f045fb1c80bbe97f6054c6529447fe33e51d9c76a95f"
+    },
+    {
+      "id": "sqlite",
+      "name": "SQLite",
+      "version": "3.53.1",
+      "license": "Public Domain",
+      "relationship": "statically linked bundled database engine",
+      "noticePath": "packaging/windows/notices/SQLite-3.53.1.txt",
+      "noticeSha256": "42e15d2eb5bed4ed2cc54b7012ca99bcad20afa95d4d5a864c9155053c7a618b"
+    },
+    {
+      "id": "microsoft-runtime",
+      "name": "Microsoft Visual C++ runtime and Windows system components",
+      "version": "MSVC 14.44.35207 / Windows SDK 10.0.26100.0",
+      "license": "Microsoft applicable license and redistribution terms",
+      "relationship": "static runtime portions; non-redistributed operating-system DLLs",
+      "noticePath": "packaging/windows/notices/Microsoft-runtime-disposition.txt",
+      "noticeSha256": "f35e4975795f8c1c2b83df7ce3af3cc2044dd5a1287011a91eb94734183ed3e7"
+    }
+  ]
+}

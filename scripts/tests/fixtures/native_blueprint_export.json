@@ -1,0 +1,428 @@
+{
+  "metadata": {
+    "schema": "gilbreth.replay_export.v1",
+    "schema_version": "1.1",
+    "value_free": true,
+    "generated_ts": "1970-01-01T00:00:10.000Z",
+    "record_session_id": 20,
+    "title": null,
+    "app_allowlist": [
+      "msedge.exe"
+    ],
+    "mode": "native_skeleton",
+    "verdict": {
+      "state": "verified_replay_eligible",
+      "export_available": true,
+      "coverage_line": "Verified replay-eligible -- native-eligible for 90% of 10 actionable steps; 1 unknown/untrusted/missing-selector gaps."
+    },
+    "source": {
+      "app_version": "test"
+    },
+    "review_labels": {
+      "included": false,
+      "source": "human_entered_at_export_time",
+      "max_chars": 120
+    }
+  },
+  "steps": [
+    {
+      "seq": 1,
+      "offset_ms_from_recording_start": 100,
+      "action_type": "invoke",
+      "pattern_action": "invoke",
+      "intent": "Invoke the button.",
+      "framework_class": "native",
+      "trust_basis": "pid_match",
+      "exe": "msedge.exe",
+      "replay_class": "eligible",
+      "native_replayable": true,
+      "selector": {
+        "backend": "uia",
+        "hops": [
+          {
+            "control_type": 50032,
+            "control_type_label": "window",
+            "automation_id": "root",
+            "class_name": "Notepad",
+            "ordinal": 0
+          },
+          {
+            "control_type": 50000,
+            "control_type_label": "button",
+            "automation_id": "safe_1",
+            "class_name": "Button",
+            "ordinal": 1
+          }
+        ],
+        "path_hash": "native-1",
+        "leaf_rect": {
+          "left": 1,
+          "top": 2,
+          "right": 3,
+          "bottom": 4
+        }
+      },
+      "input_slot_ref": null,
+      "review_label": null
+    },
+    {
+      "seq": 2,
+      "offset_ms_from_recording_start": 200,
+      "action_type": "invoke",
+      "pattern_action": "invoke",
+      "intent": "Invoke the button.",
+      "framework_class": "native",
+      "trust_basis": "pid_match",
+      "exe": "msedge.exe",
+      "replay_class": "eligible",
+      "native_replayable": true,
+      "selector": {
+        "backend": "uia",
+        "hops": [
+          {
+            "control_type": 50032,
+            "control_type_label": "window",
+            "automation_id": "root",
+            "class_name": "Notepad",
+            "ordinal": 0
+          },
+          {
+            "control_type": 50000,
+            "control_type_label": "button",
+            "automation_id": "safe_2",
+            "class_name": "Button",
+            "ordinal": 1
+          }
+        ],
+        "path_hash": "native-2",
+        "leaf_rect": {
+          "left": 2,
+          "top": 3,
+          "right": 4,
+          "bottom": 5
+        }
+      },
+      "input_slot_ref": null,
+      "review_label": null
+    },
+    {
+      "seq": 3,
+      "offset_ms_from_recording_start": 300,
+      "action_type": "invoke",
+      "pattern_action": "invoke",
+      "intent": "Invoke the button.",
+      "framework_class": "native",
+      "trust_basis": "pid_match",
+      "exe": "msedge.exe",
+      "replay_class": "eligible",
+      "native_replayable": true,
+      "selector": {
+        "backend": "uia",
+        "hops": [
+          {
+            "control_type": 50032,
+            "control_type_label": "window",
+            "automation_id": "root",
+            "class_name": "Notepad",
+            "ordinal": 0
+          },
+          {
+            "control_type": 50000,
+            "control_type_label": "button",
+            "automation_id": "safe_3",
+            "class_name": "Button",
+            "ordinal": 1
+          }
+        ],
+        "path_hash": "native-3",
+        "leaf_rect": {
+          "left": 3,
+          "top": 4,
+          "right": 5,
+          "bottom": 6
+        }
+      },
+      "input_slot_ref": null,
+      "review_label": null
+    },
+    {
+      "seq": 4,
+      "offset_ms_from_recording_start": 400,
+      "action_type": "invoke",
+      "pattern_action": "invoke",
+      "intent": "Invoke the button.",
+      "framework_class": "native",
+      "trust_basis": "pid_match",
+      "exe": "msedge.exe",
+      "replay_class": "eligible",
+      "native_replayable": true,
+      "selector": {
+        "backend": "uia",
+        "hops": [
+          {
+            "control_type": 50032,
+            "control_type_label": "window",
+            "automation_id": "root",
+            "class_name": "Notepad",
+            "ordinal": 0
+          },
+          {
+            "control_type": 50000,
+            "control_type_label": "button",
+            "automation_id": "safe_4",
+            "class_name": "Button",
+            "ordinal": 1
+          }
+        ],
+        "path_hash": "native-4",
+        "leaf_rect": {
+          "left": 4,
+          "top": 5,
+          "right": 6,
+          "bottom": 7
+        }
+      },
+      "input_slot_ref": null,
+      "review_label": null
+    },
+    {
+      "seq": 5,
+      "offset_ms_from_recording_start": 500,
+      "action_type": "invoke",
+      "pattern_action": "invoke",
+      "intent": "Invoke the button.",
+      "framework_class": "native",
+      "trust_basis": "pid_match",
+      "exe": "msedge.exe",
+      "replay_class": "eligible",
+      "native_replayable": true,
+      "selector": {
+        "backend": "uia",
+        "hops": [
+          {
+            "control_type": 50032,
+            "control_type_label": "window",
+            "automation_id": "root",
+            "class_name": "Notepad",
+            "ordinal": 0
+          },
+          {
+            "control_type": 50000,
+            "control_type_label": "button",
+            "automation_id": "safe_5",
+            "class_name": "Button",
+            "ordinal": 1
+          }
+        ],
+        "path_hash": "native-5",
+        "leaf_rect": {
+          "left": 5,
+          "top": 6,
+          "right": 7,
+          "bottom": 8
+        }
+      },
+      "input_slot_ref": null,
+      "review_label": null
+    },
+    {
+      "seq": 6,
+      "offset_ms_from_recording_start": 600,
+      "action_type": "invoke",
+      "pattern_action": "invoke",
+      "intent": "Invoke the button.",
+      "framework_class": "native",
+      "trust_basis": "pid_match",
+      "exe": "msedge.exe",
+      "replay_class": "eligible",
+      "native_replayable": true,
+      "selector": {
+        "backend": "uia",
+        "hops": [
+          {
+            "control_type": 50032,
+            "control_type_label": "window",
+            "automation_id": "root",
+            "class_name": "Notepad",
+            "ordinal": 0
+          },
+          {
+            "control_type": 50000,
+            "control_type_label": "button",
+            "automation_id": "safe_6",
+            "class_name": "Button",
+            "ordinal": 1
+          }
+        ],
+        "path_hash": "native-6",
+        "leaf_rect": {
+          "left": 6,
+          "top": 7,
+          "right": 8,
+          "bottom": 9
+        }
+      },
+      "input_slot_ref": null,
+      "review_label": null
+    },
+    {
+      "seq": 7,
+      "offset_ms_from_recording_start": 700,
+      "action_type": "invoke",
+      "pattern_action": "invoke",
+      "intent": "Invoke the button.",
+      "framework_class": "native",
+      "trust_basis": "pid_match",
+      "exe": "msedge.exe",
+      "replay_class": "eligible",
+      "native_replayable": true,
+      "selector": {
+        "backend": "uia",
+        "hops": [
+          {
+            "control_type": 50032,
+            "control_type_label": "window",
+            "automation_id": "root",
+            "class_name": "Notepad",
+            "ordinal": 0
+          },
+          {
+            "control_type": 50000,
+            "control_type_label": "button",
+            "automation_id": "safe_7",
+            "class_name": "Button",
+            "ordinal": 1
+          }
+        ],
+        "path_hash": "native-7",
+        "leaf_rect": {
+          "left": 7,
+          "top": 8,
+          "right": 9,
+          "bottom": 10
+        }
+      },
+      "input_slot_ref": null,
+      "review_label": null
+    },
+    {
+      "seq": 8,
+      "offset_ms_from_recording_start": 800,
+      "action_type": "invoke",
+      "pattern_action": "invoke",
+      "intent": "Invoke the button.",
+      "framework_class": "native",
+      "trust_basis": "pid_match",
+      "exe": "msedge.exe",
+      "replay_class": "eligible",
+      "native_replayable": true,
+      "selector": {
+        "backend": "uia",
+        "hops": [
+          {
+            "control_type": 50032,
+            "control_type_label": "window",
+            "automation_id": "root",
+            "class_name": "Notepad",
+            "ordinal": 0
+          },
+          {
+            "control_type": 50000,
+            "control_type_label": "button",
+            "automation_id": "safe_8",
+            "class_name": "Button",
+            "ordinal": 1
+          }
+        ],
+        "path_hash": "native-8",
+        "leaf_rect": {
+          "left": 8,
+          "top": 9,
+          "right": 10,
+          "bottom": 11
+        }
+      },
+      "input_slot_ref": null,
+      "review_label": null
+    },
+    {
+      "seq": 9,
+      "offset_ms_from_recording_start": 900,
+      "action_type": "invoke",
+      "pattern_action": "invoke",
+      "intent": "Invoke the button.",
+      "framework_class": "native",
+      "trust_basis": "pid_match",
+      "exe": "msedge.exe",
+      "replay_class": "eligible",
+      "native_replayable": true,
+      "selector": {
+        "backend": "uia",
+        "hops": [
+          {
+            "control_type": 50032,
+            "control_type_label": "window",
+            "automation_id": "root",
+            "class_name": "Notepad",
+            "ordinal": 0
+          },
+          {
+            "control_type": 50000,
+            "control_type_label": "button",
+            "automation_id": "safe_9",
+            "class_name": "Button",
+            "ordinal": 1
+          }
+        ],
+        "path_hash": "native-9",
+        "leaf_rect": {
+          "left": 9,
+          "top": 10,
+          "right": 11,
+          "bottom": 12
+        }
+      },
+      "input_slot_ref": null,
+      "review_label": null
+    },
+    {
+      "seq": 10,
+      "offset_ms_from_recording_start": 1200,
+      "action_type": "invoke",
+      "pattern_action": "invoke",
+      "intent": "Invoke the target control.",
+      "framework_class": "native",
+      "trust_basis": "scoped_invoke_sender",
+      "exe": "msedge.exe",
+      "replay_class": "native_gap",
+      "native_replayable": false,
+      "selector": null,
+      "input_slot_ref": null,
+      "review_label": null
+    },
+    {
+      "seq": 11,
+      "offset_ms_from_recording_start": 1400,
+      "action_type": "edit_committed",
+      "pattern_action": null,
+      "intent": "Provide the runtime input for this step.",
+      "framework_class": "native",
+      "trust_basis": "pid_match",
+      "exe": "msedge.exe",
+      "replay_class": "free_input",
+      "native_replayable": false,
+      "selector": null,
+      "input_slot_ref": "input_1",
+      "review_label": null
+    }
+  ],
+  "input_slots": [
+    {
+      "slot_id": "input_1",
+      "at_step_seq": 11,
+      "role": "input",
+      "type": "string",
+      "target_selector_ref": "native-1"
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+# kittest snapshot scratch outputs (diffs, backups, and the most-recent
+# render on a mismatch) — these are regeneration artifacts, never checked
+# in. The patterns match at any depth, so they cover the per-OS subdirs.
+*.diff.png
+*.old.png
+*.new.png

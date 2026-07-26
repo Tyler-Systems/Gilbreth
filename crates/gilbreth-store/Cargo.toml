@@ -1,0 +1,29 @@
+[package]
+name = "gilbreth-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+aead.workspace = true
+aes-gcm.workspace = true
+argon2.workspace = true
+crossbeam-channel.workspace = true
+gilbreth-core = { path = "../gilbreth-core" }
+rusqlite.workspace = true
+rusqlite_migration.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Security_Cryptography",
+] }
+
+[dev-dependencies]
+gilbreth-read = { path = "../gilbreth-read" }
+tempfile.workspace = true

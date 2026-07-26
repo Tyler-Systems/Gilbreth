@@ -1,0 +1,83 @@
+[package]
+name = "gilbreth-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+crossbeam-channel.workspace = true
+gilbreth-core = { path = "../gilbreth-core" }
+gilbreth-dashboard = { path = "../gilbreth-dashboard" }
+gilbreth-read = { path = "../gilbreth-read" }
+gilbreth-store = { path = "../gilbreth-store" }
+icu_casemap.workspace = true
+# Constrain the baked casefold tables independently of the API crate.
+icu_casemap_data.workspace = true
+regex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+toml_edit.workspace = true
+tracing.workspace = true
+tracing-appender.workspace = true
+tracing-subscriber.workspace = true
+tray-icon.workspace = true
+uuid.workspace = true
+
+# Per-target capture backend + platform APIs behind src/platform (MAC-0).
+[target.'cfg(windows)'.dependencies]
+gilbreth-capture-windows = { path = "../gilbreth-capture-windows" }
+windows = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Cryptography",
+    "Win32_Security_Cryptography_Catalog",
+    "Win32_Security_Cryptography_Sip",
+    "Win32_Security_WinTrust",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+gilbreth-capture-macos = { path = "../gilbreth-capture-macos" }
+libc.workspace = true
+# Shell slice: NSApplication init + the per-pass NSEvent drain (the macOS
+# half of what the Win32 GetMessage loop does for the tray). Shell
+# remainders add NSAlert dialogs and SMAppService login-item autostart.
+objc2.workspace = true
+objc2-app-kit.workspace = true
+objc2-foundation.workspace = true
+objc2-service-management.workspace = true
+
+[features]
+# Dev-only probe for the cross-language DASH-04 health differential; a
+# package-wide build never emits it, so "not shipped" is enforced by
+# Cargo rather than installer convention.
+dev-health-dump = []
+# Dev-only probe measuring whether a Carbon RegisterEventHotKey chord reaches
+# the pump's manual event drain (P3, macOS panic hotkey). Same not-shipped
+# enforcement as above.
+dev-hotkey-probe = []
+
+[build-dependencies]
+embed-resource = "=3.0.11"
+
+[[bin]]
+name = "gilbreth-health-dump"
+path = "src/bin/gilbreth-health-dump.rs"
+required-features = ["dev-health-dump"]
+
+[[bin]]
+name = "gilbreth-hotkey-probe"
+path = "src/bin/gilbreth-hotkey-probe.rs"
+required-features = ["dev-hotkey-probe"]
+
+[dev-dependencies]
+tempfile.workspace = true
