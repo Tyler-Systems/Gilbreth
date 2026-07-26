@@ -39,6 +39,11 @@ because it is a larger request than many projects make:
 - **Tyler Systems LLC may license contributions under any terms**, including
   proprietary and commercial ones. That is the point of the agreement, and it is
   stated rather than implied.
+- **Your contribution also stays available under the licence it arrived under.**
+  The agreement obliges us to keep licensing it under the project's existing
+  licences as of the day you submit it, which today means AGPL-3.0-or-later. The
+  commercial licence is an addition, not a door closing behind you: nothing here
+  lets us take your work proprietary and withdraw the open version.
 - **Moral rights are waived** to the extent the law allows.
 - **Patent rights** covering your contribution are licensed alongside it.
 
