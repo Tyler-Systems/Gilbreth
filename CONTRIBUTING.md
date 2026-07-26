@@ -14,7 +14,7 @@ Useful bug reports say what you did, what happened, what you expected, and
 which platform and version. Gilbreth sends no telemetry, so a report is the only
 way a problem reaches us.
 
-## Code contributions require a signed CLA
+## Code contributions require a signed contributor agreement
 
 Gilbreth is licensed under AGPL-3.0-or-later, and Tyler Systems LLC also offers
 it under a commercial licence. Serving both is only possible if one party holds
@@ -24,19 +24,34 @@ That has a consequence worth stating plainly rather than burying: merging a
 single external contribution without an agreement in place would permanently
 foreclose the commercial licence for that code, because the contributor would
 retain rights the project could not relicense. A Developer Certificate of Origin
-does not solve this — it certifies a contributor's right to submit, but grants
-the project nothing further.
+does not solve this. It certifies a contributor's right to submit and grants the
+project nothing further.
 
-So contributions require a **Contributor Licence Agreement**, in individual and
-entity forms, granting Tyler Systems LLC the rights needed to distribute
-contributed work under both licences. Contributors keep the copyright in what
-they write.
+So contributions require a signed **Contributor Assignment Agreement**, in
+individual and entity forms. Read what it actually asks before you write code,
+because it is a larger request than many projects make:
 
-**Current status: the CLA is not published yet.** Until it is, external code
-pull requests are not accepted, and unsolicited pull requests will be closed
-unmerged — not as a judgement on the work, but because merging one before the
-agreement exists causes exactly the problem above. Issues remain open and are
-the most useful thing you can send in the meantime.
+- **You assign copyright in your contribution to Tyler Systems LLC.** You do not
+  retain ownership of the contributed code.
+- **You receive a licence back**, covering your own contribution, so you remain
+  free to use, publish and relicense your own work elsewhere. Assigning it here
+  does not take it away from you.
+- **Tyler Systems LLC may license contributions under any terms**, including
+  proprietary and commercial ones. That is the point of the agreement, and it is
+  stated rather than implied.
+- **Moral rights are waived** to the extent the law allows.
+- **Patent rights** covering your contribution are licensed alongside it.
+
+If that trade is not one you want to make, say so in an issue instead. A good
+issue is worth more to this project than code that arrives with rights we cannot
+use, and no one should sign this by accident.
+
+**Current status: the agreement text is not published yet.** Until it is,
+external code pull requests are not accepted, and unsolicited pull requests will
+be closed unmerged. That is not a judgement on the work. Merging one before the
+agreement exists causes exactly the problem above, and it cannot be undone
+afterwards. Issues remain open and are the most useful thing you can send in the
+meantime.
 
 ## Building and testing
 

@@ -176,9 +176,12 @@ an allowlist row in the docs test. Never a silent pass.
   requirement changes.
 - Use the release process for every release.
 - Issues are welcome. Do not accept external code pull requests until the
-  Contributor Licence Agreement is published — decided 2026-07-25, individual
-  and entity forms, so contributed work can ship under both AGPL-3.0-or-later
-  and the commercial licence. A DCO would not do this: it certifies the right
-  to submit and grants the project nothing further, so one merged contribution
-  would foreclose the commercial option permanently. Policy and scope are in
-  [CONTRIBUTING.md](../CONTRIBUTING.md).
+  contributor agreement is published. Decided 2026-07-26: a **Contributor
+  Assignment Agreement**, individual and entity forms, so contributed work can
+  ship under both AGPL-3.0-or-later and the commercial licence. Two instruments
+  were ruled out for the same reason. A DCO only certifies the right to submit
+  and grants the project nothing further. The Apache ICLA grants the right to
+  *sublicense*, which is not the right to *relicense*, so it cannot loosen the
+  inbound licence enough to support a commercial offering. Either would let one
+  merged contribution foreclose the commercial option permanently. Policy and
+  scope are in [CONTRIBUTING.md](../CONTRIBUTING.md).
