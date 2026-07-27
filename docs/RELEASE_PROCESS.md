@@ -1,6 +1,6 @@
 # Release process
 
-This is the sole recurring release procedure for Gilbreth. The
+This is the sole recurring release procedure for Gilbreth.
 The roadmap decides *what* is ready; this document defines *how* a
 release is cut. The one-time move to a public repository follows a separate runbook.
 
@@ -85,11 +85,17 @@ secret material.
 8. **Verify as a stranger.** Without private-repository access, download every
    published set, follow [VERIFY.md](VERIFY.md), and exercise the applicable
    clean install/update/uninstall path.
-9. **Dogfood and fix forward.** Normal use is the soak. Correct a defect in a
-   new version; do not silently replace assets under an existing version. A
-   truly unusable release may be marked pre-release or withdrawn with a plain
-   explanation, but user data is never rolled back or deleted as a release
-response.
+9. **Update the website.** `gilbreth.tylersystems.com` states the released
+   version in several places: `index.html` (the hero note, the "Where we are"
+   section, the FAQ answer, and the JSON-LD `softwareVersion`) and
+   `thanks.html` (the download link label). The site source is maintained
+   outside this repository; bump every version string and redeploy it when
+   the release publishes.
+10. **Dogfood and fix forward.** Normal use is the soak. Correct a defect in a
+    new version; do not silently replace assets under an existing version. A
+    truly unusable release may be marked pre-release or withdrawn with a plain
+    explanation, but user data is never rolled back or deleted as a release
+    response.
 
 The tag and publication operations are intentionally ordinary. Set the version
 once, inspect the annotated tag, and push that same object only after every
