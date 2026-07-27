@@ -1,8 +1,14 @@
 # Gilbreth
 
-**A privacy-respecting "time & motion" study for your computer — capture how you work, then find the friction worth removing.**
+**A privacy-respecting "time & motion" study for your computer: capture how you work, record the routines you'd like to automate, and discover patterns you've never seen.**
 
-[![Download for Windows 11](https://img.shields.io/github/v/release/Tyler-Systems/Gilbreth?label=download%20for%20Windows%2011&labelColor=15171B&color=F2A33C)](https://github.com/Tyler-Systems/Gilbreth/releases/latest) ![Status](https://img.shields.io/badge/status-preview-yellow) ![App](https://img.shields.io/badge/app-Rust-informational) ![Dashboard](https://img.shields.io/badge/dashboard-Rust%20%2F%20egui-informational) ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-blue) ![Data](https://img.shields.io/badge/data-local%20only-brightgreen) ![License](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue)
+**Download:**
+
+[![Download for Windows 11](https://img.shields.io/github/v/release/Tyler-Systems/Gilbreth?label=download%20for%20Windows%2011&labelColor=15171B&color=F2A33C)](https://github.com/Tyler-Systems/Gilbreth/releases/latest) ![Status](https://img.shields.io/badge/status-preview-yellow)
+
+**Badges:**
+
+![App](https://img.shields.io/badge/app-Rust-informational) ![Dashboard](https://img.shields.io/badge/dashboard-Rust%20%2F%20egui-informational) ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-blue) ![Data](https://img.shields.io/badge/data-local%20only-brightgreen) ![License](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue)
 
 A century ago, Frank and Lillian Gilbreth filmed people at work, found the
 wasted motions, and made the work less tiring. Gilbreth does that for computer
