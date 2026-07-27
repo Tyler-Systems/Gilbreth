@@ -55,6 +55,10 @@ From the first minute:
   are announced on the [website](https://gilbreth.tylersystems.com/) and the
   [releases page](https://github.com/Tyler-Systems/Gilbreth/releases).
 
+All of those controls live in the tray menu:
+
+![The Gilbreth tray menu: a Capture submenu with per-stream checkmarks for Foreground, Windows, Keyboard, Mouse, System, and Idle; Pause capture; Open Dashboard; Record Routine; and a Privacy submenu with typed-key-content opt-in, notification counts, archive and reset, and erase all my data](docs/media/tray-menu.gif)
+
 ## Follow along
 
 Gilbreth is built in the open by one person. Set the repository's Watch to
