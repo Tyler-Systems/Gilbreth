@@ -120,9 +120,12 @@ gh release create "v$Version" --draft --verify-tag `
 ```
 
 Release when there is something worth shipping; there is no calendar cadence.
-The intended human gate is under an hour once the platform builder exists. Do
-not restore per-release review packets, candidate chains, duration-locked
-soaks, evidence sealing, or other retired R1 ceremony.
+The Windows builder exists and has shipped a release, so the intended human
+gate is under an hour. Expect the first release on any new machine to take
+considerably longer than that: `v0.1.1` did, and every minute of the overrun
+was environment rather than product. Do not restore per-release review
+packets, candidate chains, duration-locked soaks, evidence sealing, or other
+retired R1 ceremony.
 
 ## Windows x64 release lane
 
