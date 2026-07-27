@@ -2,13 +2,7 @@
 
 **A privacy-respecting "time & motion" study for your computer — capture how you work, then find the friction worth removing.**
 
-[![Latest release](https://img.shields.io/github/v/release/Tyler-Systems/Gilbreth)](https://github.com/Tyler-Systems/Gilbreth/releases/latest)
-![Status](https://img.shields.io/badge/status-preview-yellow)
-![App](https://img.shields.io/badge/app-Rust-informational)
-![Dashboard](https://img.shields.io/badge/dashboard-Rust%20%2F%20egui-informational)
-![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-blue)
-![Data](https://img.shields.io/badge/data-local%20only-brightgreen)
-![License](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue)
+[![Download for Windows 11](https://img.shields.io/github/v/release/Tyler-Systems/Gilbreth?label=download%20for%20Windows%2011&labelColor=15171B&color=F2A33C)](https://github.com/Tyler-Systems/Gilbreth/releases/latest) ![Status](https://img.shields.io/badge/status-preview-yellow) ![App](https://img.shields.io/badge/app-Rust-informational) ![Dashboard](https://img.shields.io/badge/dashboard-Rust%20%2F%20egui-informational) ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-blue) ![Data](https://img.shields.io/badge/data-local%20only-brightgreen) ![License](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue)
 
 A century ago, Frank and Lillian Gilbreth filmed people at work, found the
 wasted motions, and made the work less tiring. Gilbreth does that for computer
@@ -121,13 +115,13 @@ The project is named for **Frank and Lillian Gilbreth**, the early-20th-century 
 Gilbreth v2 is one Rust executable with two process roles: the long-running tray process captures, filters, and stores activity, while an on-demand `--dashboard` process renders the native egui dashboard. SQLite is the local contract between them; there is no dashboard server or socket.
 
 ```
-┌──────────────────────────────────────────────┐                  ┌─────────────────────────────┐
-│       gilbreth-app  (capture/tray role)      │                  │ gilbreth-app --dashboard   │
-│                                              │                  │       (Rust / egui)         │
-│  capture ──▶ privacy filter ──▶ SQLite write │ ──▶ gilbreth.db  │ native views • analytics   │
-│  (Win32)     (framed door,      (batched,    │ ◀── WAL reads ── │ privacy/config actions     │
-│  tray shell  open by default)   single-writer│                  │ selected delete / prune    │
-└──────────────────────────────────────────────┘                  └─────────────────────────────┘
+┌───────────────────────────────────────────────┐                  ┌──────────────────────────┐
+│       gilbreth-app  (capture/tray role)       │                  │ gilbreth-app --dashboard │
+│                                               │                  │      (Rust / egui)       │
+│ capture ──▶ privacy filter ──▶ SQLite write   │ ──▶ gilbreth.db  │ native views • analytics │
+│ (Win32)     (framed door,      (batched,      │ ◀── WAL reads ── │  privacy/config actions  │
+│ tray shell  open by default)   single-writer) │                  │ selected delete / prune  │
+└───────────────────────────────────────────────┘                  └──────────────────────────┘
 ```
 
 | Piece | Language | Responsibility | Status |
