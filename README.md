@@ -11,28 +11,29 @@ motion, and idle time into a local SQLite database, and a native dashboard
 shows you where your day actually went. Your data never leaves your machine:
 no outbound network calls, no telemetry, no account.
 
-![Gilbreth's Today tab: a timeline of which application was in front, an hourly keyboard and mouse pulse, headline figures for active time and focus switches, and the patterns it flags as worth reviewing](crates/gilbreth-dashboard/tests/snapshots/windows/today_rich.png)
-
-Before installing anything that records you, the
-[Privacy tab](crates/gilbreth-dashboard/tests/snapshots/windows/privacy_rich.png)
-is the one to look at. It shows what is stored, the redaction and exclusion
-rules, how long things are kept, and how to delete them. Both images are the
-dashboard's own test snapshots, rendered from fixture data rather than a real
-person's activity, and regenerated whenever the interface changes.
-
 ## Download
 
 **[Gilbreth v0.1.1 for Windows 11 (x64)](https://github.com/Tyler-Systems/Gilbreth/releases/latest)**
 is the current release, an early preview. Each release is a signed installer
-accompanied by `release-manifest.json` and `SHA256SUMS.txt`, and it is built
-to be checked: **[docs/VERIFY.md](docs/VERIFY.md)** walks through verifying
-all three files before you run Setup. Windows SmartScreen can still warn
-about a publisher it has not seen often yet.
+alongside `release-manifest.json` and `SHA256SUMS.txt`;
+**[docs/VERIFY.md](docs/VERIFY.md)** shows how to check all three before you
+run Setup. Windows SmartScreen may warn while the signing certificate is new.
 
 Not on Windows? macOS capture works in development builds with no packaged
 release yet, and developers on either platform can
 [build from source](#getting-started-developers). The website is
 **[gilbreth.tylersystems.com](https://gilbreth.tylersystems.com/)**.
+
+<p align="center">
+  <a href="crates/gilbreth-dashboard/tests/snapshots/windows/today_rich.png"><img src="crates/gilbreth-dashboard/tests/snapshots/windows/today_rich.png" width="49%" alt="Gilbreth's Today tab: a timeline of which application was in front, an hourly keyboard and mouse pulse, headline figures for active time and focus switches, and the patterns it flags as worth reviewing"></a>
+  <a href="crates/gilbreth-dashboard/tests/snapshots/windows/privacy_rich.png"><img src="crates/gilbreth-dashboard/tests/snapshots/windows/privacy_rich.png" width="49%" alt="Gilbreth's Privacy tab: what is stored, the redaction and exclusion rules, retention settings, and the delete controls"></a>
+</p>
+
+Before installing anything that records you, look at the Privacy tab (right):
+what is stored, the redaction and exclusion rules, how long things are kept,
+and how to delete them. Both images are the dashboard's own test snapshots,
+rendered from fixture data rather than a real person's activity, and
+regenerated whenever the interface changes.
 
 ## First run
 
@@ -103,14 +104,18 @@ The project is named for **Frank and Lillian Gilbreth**, the early-20th-century 
 
 **Gilbreth** helps people understand how they actually use a computer, so they can find repetitive, fragmented, or tiring workflows and decide what's worth improving or automating. It captures a motion-level record of your activity and keeps it entirely on your machine.
 
-1. **Human-centered efficiency** — enhance well-being and respect individual workflows; sustainable productivity over raw speed.
+1. **Efficiency serves the worker** — remove the tiring motions instead of demanding more speed; the Gilbreths' rule, kept.
 2. **Scientific rigor** — capture accurate, structured, complete data so the analysis is meaningful.
 3. **Data sovereignty** — Gilbreth captures a lot (keystroke timing and motion, though not typed content by default), so the contract is strict: **your data never leaves your machine**, any capture stream can be disabled at runtime, and you can inspect, archive, age out, and delete everything it records. No outbound network calls, no telemetry: by architecture, not policy.
 4. **Portable, not captive** — Gilbreth is a local **capture-and-discovery** layer, not an automation platform. It runs no automation and picks no winner: discovery produces **portable, value-free local artifacts** (the SQLite database and Record Routine JSON exports) that *you* can carry to an LLM agent, an RPA tool, or your own analysis, or nowhere at all.
 
 > **On "AI":** the long-term goal is ML-driven automation suggestions, but v2 ships heuristic analytics first. We describe what's built, not what's aspirational.
 
-**Where Gilbreth sits.** Plenty of tools capture local activity (ActivityWatch) or record everything (screenpipe, Rewind), and enterprise task mining (Power Automate, Mimica) finds automatable work inside organizations. For **individuals**, the consistently-missing piece is **friction discovery**: surfacing where your work is repetitive, *fragmented*, or tiring so you can decide what's worth removing. That discovery layer is Gilbreth's focus; a 2026 competitive scan found no individual-focused product combining local capture + value-free discovery + portable handoff. Honest status: today's discovery is heuristic. It ships as the Today tab's **Worth noticing** notices, routine motifs, cross-app copy hand-off patterns (clipboard and modifier metadata only, never contents), fragmentation and focus metrics (including an interruption-cost price tag: what a pull-away costs on return), Input Exposure, a week digest that flags patterns appearing or going quiet, and **Working Spheres** (work episodes with app composition, plus an opt-in view that names episodes from window titles). And to be precise about "value-free": it describes the **analysis defaults and exports**, which use no input content. Ambient capture covers app/window activity, input timing and motion, system state, and selected metadata streams, but it is deliberately bounded: typed key content is off by default (keystrokes are counted and classified, not recorded verbatim), exclusions and sensitive-context rules limit persistence, background-process churn is summarized, and raw mouse-move history ages out by default. Window titles are stored unless redacted or aged out. The one analysis that reads the *content* of those titles (the opt-in Working Spheres named view) is off by default, runs at view time on your machine only, and its names never enter an export; every other view treats a title as an opaque row field it never inspects (see [Privacy & data](#-privacy--data)).
+**Where Gilbreth sits.** Plenty of tools capture local activity (ActivityWatch) or record everything (screenpipe, Rewind), and enterprise task mining (Power Automate, Mimica) finds automatable work inside organizations. For individuals, the missing piece is **friction discovery**: surfacing where your work is repetitive, fragmented, or tiring so you can decide what's worth removing. That layer is Gilbreth's focus; a 2026 competitive scan found no individual-focused product combining local capture, value-free discovery, and portable handoff.
+
+Today's discovery is heuristic, and it already ships: the Today tab's **Worth noticing** cards, routine motifs, cross-app copy hand-offs (clipboard and modifier metadata only, never contents), fragmentation and focus metrics with an interruption-cost figure (what a pull-away costs on return), Input Exposure, a week digest that flags patterns appearing or going quiet, and **Working Spheres** (work episodes with app composition, plus an opt-in view that names episodes from window titles).
+
+"Value-free" describes the analysis defaults and exports, which use no input content. Ambient capture covers app/window activity, input timing and motion, system state, and selected metadata streams, deliberately bounded: typed key content is off by default (keystrokes are counted and classified, not recorded verbatim), exclusions and sensitive-context rules limit persistence, background-process churn is summarized, and raw mouse-move history ages out by default. Window titles are stored unless redacted or aged out; the one analysis that reads their content (the opt-in Working Spheres named view) is off by default, runs at view time on your machine only, and its names never enter an export. Every other view treats a title as an opaque row field (see [Privacy & data](#-privacy--data)).
 
 ---
 
@@ -277,7 +282,7 @@ Copyright © 2024-2026 Tyler Systems LLC. Gilbreth's own source is licensed unde
 
 Bundled third-party components keep their own licenses and are not relicensed by the above. Gilbreth bundles two font families, Inter and IBM Plex Mono, both under the SIL Open Font License 1.1, whose terms require them to travel under that license in every copy; each ships with its license text beside it in `crates/gilbreth-dashboard/assets/fonts/`. Every other dependency is listed in [THIRD-PARTY-NOTICES.md](docs/THIRD-PARTY-NOTICES.md).
 
-In plain terms: you may use, study, modify, and redistribute Gilbreth freely; if you distribute it (or offer a modified version over a network), your version must be open under the same terms. For a tool that records keystrokes, that's the point — **every fork stays publicly auditable**, and nobody can turn Gilbreth into closed-source surveillance software. If the AGPL doesn't fit your situation, commercial licenses are available from Tyler Systems LLC.
+In plain terms: you may use, study, modify, and redistribute Gilbreth freely; if you distribute it (or offer a modified version over a network), your version must stay open under the same terms. For a tool that records keystrokes, that is the point: every fork stays publicly auditable. If the AGPL doesn't fit your situation, commercial licenses are available from Tyler Systems LLC.
 
 ---
 
