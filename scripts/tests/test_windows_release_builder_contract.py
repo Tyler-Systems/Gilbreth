@@ -21,6 +21,97 @@ def _builder() -> str:
     return BUILDER.read_text(encoding="utf-8")
 
 
+def test_release_build_never_mutates_the_callers_environment() -> None:
+    """The build environment belongs to the child process, not to this shell.
+
+    The builder used to set the toolchain variables on itself and restore them
+    in a finally block. Two things went wrong with that. An interrupt skipped
+    the restore, and the restore itself passed PowerShell's $null to
+    SetEnvironmentVariable, which writes an empty string rather than removing
+    the variable. Either way the caller's shell was left holding variables that
+    the builder's own environment guard rejects, so a second run in the same
+    shell failed with a list of twenty names and no hint that the fix was a new
+    shell.
+    """
+    script = _builder()
+
+    assert "function Invoke-NativeTextInEnvironment" in script
+    assert "Invoke-NativeTextInEnvironment -FilePath $cargoPath" in script
+
+    # The toolchain variables must be delivered as a hashtable to the child,
+    # never assigned into this process.
+    for name in (
+        "GILBRETH_BUILD_GIT_SHA",
+        "VCToolsInstallDir",
+        "WindowsSDKVersion",
+        "CC_x86_64_pc_windows_msvc",
+    ):
+        assert (
+            f"[Environment]::SetEnvironmentVariable('{name}'" not in script
+        ), f"{name} is still assigned into the builder's own process"
+
+    # Nothing may reintroduce the save/restore pattern. Checked by its own
+    # variables rather than by looking for "finally", which the script uses
+    # legitimately elsewhere for disposing handles.
+    for marker in (
+        "$nativeBuildEnvironmentBefore",
+        "$nativeBuildEnvironmentNames",
+        "$oldIncremental",
+        "$oldPackageTrustMode",
+    ):
+        assert marker not in script, f"{marker} reintroduces the save/restore pattern"
+
+    # An ambient developer command prompt must not reach the build.
+    assert "'VSINSTALLDIR'                    = $null" in script
+    assert "'VCINSTALLDIR'                    = $null" in script
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="PowerShell 7 required")
+def test_child_environment_removes_variables_rather_than_blanking_them() -> None:
+    """$null must delete the variable in the child, not set it to "".
+
+    This is the exact defect that made the builder single-shot per shell, and it
+    is invisible to inspection: an empty variable still appears in `Get-ChildItem
+    Env:` and still trips a guard that only checks for presence.
+    """
+    builder = _builder()
+    function = "function Invoke-NativeTextInEnvironment" + builder.split(
+        "function Invoke-NativeTextInEnvironment", 1
+    )[1].split("\nfunction Get-Sha256Lower", 1)[0]
+
+    script = f"""
+$ErrorActionPreference = 'Stop'
+{function}
+# PROBE_KEEP is inherited, PROBE_DROP is removed, PROBE_SET is overridden.
+$env:PROBE_KEEP = 'inherited'
+$env:PROBE_DROP = 'should-disappear'
+$out = Invoke-NativeTextInEnvironment -FilePath 'cmd.exe' `
+    -ArgumentList @('/c', 'set PROBE_') `
+    -Environment @{{ 'PROBE_DROP' = $null; 'PROBE_SET' = 'overridden' }}
+"CHILD:$out"
+"PARENT_DROP_STILL_SET:$([bool]$env:PROBE_DROP)"
+"PARENT_SET_LEAKED:$([bool]$env:PROBE_SET)"
+"""
+    result = subprocess.run(
+        [shutil.which("pwsh"), "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    out = result.stdout
+
+    assert "PROBE_KEEP=inherited" in out, "the child should inherit unlisted variables"
+    assert "PROBE_SET=overridden" in out, "the child should receive overrides"
+    assert "PROBE_DROP" not in out.split("PARENT_DROP_STILL_SET")[0], (
+        "a $null value must remove the variable from the child, not blank it"
+    )
+    # And the caller is untouched either way.
+    assert "PARENT_DROP_STILL_SET:True" in out
+    assert "PARENT_SET_LEAKED:False" in out
+
+
 def test_release_config_accepts_only_plain_semver_tags_and_stable_names() -> None:
     config = json.loads(CONFIG.read_text(encoding="utf-8"))
     tag_pattern = re.compile(

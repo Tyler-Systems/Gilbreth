@@ -1,6 +1,7 @@
 import base64
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -402,7 +403,13 @@ def test_builder_enforces_gate_before_execution_and_after_signing() -> None:
     config = json.loads(CONFIG.read_text(encoding="utf-8"))
     assert config["msvcRuntimeLinkage"] == "static"
     assert "target-feature=+crt-static" in source
-    assert "[Environment]::SetEnvironmentVariable('RC', $rcPath, 'Process')" in source
+    # The resource compiler must reach the build. It is delivered in the child
+    # process environment rather than assigned into the builder's own process,
+    # so this asserts the guarantee rather than the mechanism that carries it.
+    assert re.search(r"^\s*'RC'\s*=\s*\$rcPath\s*$", source, re.MULTILINE), (
+        "the builder must pass RC to the build environment"
+    )
+    assert "Invoke-NativeTextInEnvironment -FilePath $cargoPath" in source
     assert "RC($|_)" in source
 
 

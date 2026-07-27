@@ -14,8 +14,19 @@ numerically latest project tag.
 
 The Windows release maintainer needs a clean Windows 11 x64 clone, Git,
 PowerShell 7, Python with `scripts/requirements-dev.txt`, rustup, and either the
-GitHub CLI or equivalent GitHub web access. Enable the checked-in routing once
-per clone and install the toolchain named by the release configuration:
+GitHub CLI or equivalent GitHub web access.
+
+**Build from an ordinary PowerShell 7 window, not a Visual Studio developer
+prompt.** The builder rejects an environment carrying compiler or Cargo
+overrides, because those can change what gets compiled without changing the
+source. A shell that has run `vcvars`, `VsDevCmd`, or `Enter-VsDevShell` carries
+roughly twenty of them and cannot build a release. The failure names every
+offending variable but does not say what to do, so the answer is here: open a new
+window. The builder locates and pins the toolchain itself; it needs no help from
+the shell.
+
+Enable the checked-in routing once per clone and install the toolchain named by
+the release configuration:
 
 ```powershell
 git config core.hooksPath .githooks

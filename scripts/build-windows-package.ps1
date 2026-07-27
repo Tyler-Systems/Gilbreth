@@ -54,6 +54,78 @@ function Invoke-NativeText {
     return $text.Trim()
 }
 
+function Invoke-NativeTextInEnvironment {
+    <#
+    .SYNOPSIS
+        Runs a native command under an explicit environment, without touching
+        this process's own environment.
+
+    .DESCRIPTION
+        The release build needs a precisely controlled toolchain environment.
+        Setting those variables on the caller and restoring them afterwards had
+        two defects. The caller's shell was mutated for the duration of the
+        build, and an interrupt skipped the restore, leaving a shell that the
+        environment guard would then reject on the next run with a list of
+        twenty variable names and no hint that a fresh shell was the fix.
+
+        Applying the environment to the child instead makes the build hermetic
+        with respect to the caller's shell, which is the same principle as
+        pinning the toolchain by hash: the output should not depend on ambient
+        state.
+
+        A $null value REMOVES the variable from the child. That distinction is
+        the reason this function exists in this form:
+        [Environment]::SetEnvironmentVariable($name, $null) called from
+        PowerShell writes an empty string, which creates the variable rather
+        than removing it, and an empty variable still trips the guard.
+    #>
+    param(
+        [Parameter(Mandatory)] [string]$FilePath,
+        [string[]]$ArgumentList = @(),
+        [hashtable]$Environment = @{},
+        [string[]]$RedactValues = @()
+    )
+
+    $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $FilePath
+    foreach ($argument in $ArgumentList) { $startInfo.ArgumentList.Add($argument) }
+    $startInfo.UseShellExecute = $false
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $startInfo.WorkingDirectory = (Get-Location).ProviderPath
+    foreach ($entry in $Environment.GetEnumerator()) {
+        if ($null -eq $entry.Value) {
+            [void]$startInfo.Environment.Remove([string]$entry.Key)
+        }
+        else {
+            $startInfo.Environment[[string]$entry.Key] = [string]$entry.Value
+        }
+    }
+
+    $process = [System.Diagnostics.Process]::Start($startInfo)
+    # Both pipes are read concurrently. Draining one to completion before
+    # starting the other deadlocks as soon as the unread pipe's buffer fills,
+    # which a release build's output reliably does.
+    $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+    $stderrTask = $process.StandardError.ReadToEndAsync()
+    $process.WaitForExit()
+    $stdout = $stdoutTask.GetAwaiter().GetResult()
+    $stderr = $stderrTask.GetAwaiter().GetResult()
+    $exitCode = $process.ExitCode
+
+    $text = (@($stdout, $stderr) | Where-Object { -not [string]::IsNullOrEmpty($_) }) -join "`n"
+    $displayArguments = @($ArgumentList)
+    foreach ($value in $RedactValues) {
+        if ([string]::IsNullOrEmpty($value)) { continue }
+        $text = $text.Replace($value, '[REDACTED]')
+        $displayArguments = @($displayArguments | ForEach-Object { $_.Replace($value, '[REDACTED]') })
+    }
+    if ($exitCode -ne 0) {
+        throw "Command failed ($exitCode): $FilePath $($displayArguments -join ' ')`n$text"
+    }
+    return $text.Trim()
+}
+
 function Get-Sha256Lower {
     param([Parameter(Mandatory)] [string]$LiteralPath)
     return (Get-FileHash -Algorithm SHA256 -LiteralPath $LiteralPath).Hash.ToLowerInvariant()
@@ -744,102 +816,74 @@ foreach ($internalDir in @($publishWorkDir, $finalInnoDir, $signingPassDir)) {
     Assert-NoReparseAncestors -Path $internalDir -Label 'internal package work directory'
 }
 
-$oldIncremental = $env:CARGO_INCREMENTAL
-$oldEpoch = $env:SOURCE_DATE_EPOCH
-$oldTargetDir = $env:CARGO_TARGET_DIR
-$oldBuildTarget = $env:CARGO_BUILD_TARGET
-$oldRustFlags = $env:RUSTFLAGS
-$oldEncodedRustFlags = $env:CARGO_ENCODED_RUSTFLAGS
-$oldRustc = $env:RUSTC
-$oldRustcWrapper = $env:RUSTC_WRAPPER
-$oldRustcWorkspaceWrapper = $env:RUSTC_WORKSPACE_WRAPPER
-$oldPackageTrustMode = $env:GILBRETH_PACKAGE_TRUST_MODE
-$oldPackageSignerSubject = $env:GILBRETH_PACKAGE_SIGNER_SUBJECT
-$nativeBuildEnvironmentNames = @(
-    'PATH', 'INCLUDE', 'LIB', 'LIBPATH',
-    'CC_x86_64_pc_windows_msvc', 'AR_x86_64_pc_windows_msvc', 'RC',
-    'CFLAGS_x86_64_pc_windows_msvc', 'CL', '_CL_', 'LINK', '_LINK_',
-    'VCToolsInstallDir', 'VCToolsVersion', 'WindowsSdkDir',
-    'WindowsSDKVersion', 'VisualStudioVersion', 'VSINSTALLDIR', 'VCINSTALLDIR',
-    'GILBRETH_BUILD_GIT_SHA'
-)
-$nativeBuildEnvironmentBefore = @{}
-foreach ($name in $nativeBuildEnvironmentNames) {
-    $nativeBuildEnvironmentBefore[$name] =
-        [Environment]::GetEnvironmentVariable($name, 'Process')
-}
 $targetTriple = [string]$config.rustHost
-try {
-    $env:CARGO_INCREMENTAL = '0'
-    $env:SOURCE_DATE_EPOCH = $commitEpoch
-    $env:CARGO_TARGET_DIR = $workDir
-    $env:CARGO_BUILD_TARGET = $null
-    $env:RUSTFLAGS = $null
-    $env:CARGO_ENCODED_RUSTFLAGS = $null
-    $env:RUSTC = $rustcPath
-    $env:RUSTC_WRAPPER = $null
-    $env:RUSTC_WORKSPACE_WRAPPER = $null
-    $env:GILBRETH_PACKAGE_TRUST_MODE = 'release-package'
-    $env:GILBRETH_PACKAGE_SIGNER_SUBJECT = [string]$config.signerSimpleSubject
-    $nativePath = @(
-        $rustToolchainBin,
-        $msvcBin,
-        $windowsSdkBin,
-        (Join-Path $env:WINDIR 'System32'),
-        $env:WINDIR
-    ) -join ';'
-    [Environment]::SetEnvironmentVariable('PATH', $nativePath, 'Process')
-    [Environment]::SetEnvironmentVariable('INCLUDE', ($includeDirectories -join ';'), 'Process')
-    [Environment]::SetEnvironmentVariable('LIB', ($libraryDirectories -join ';'), 'Process')
-    [Environment]::SetEnvironmentVariable('LIBPATH', $msvcLib, 'Process')
-    [Environment]::SetEnvironmentVariable('CC_x86_64_pc_windows_msvc', $clPath, 'Process')
-    [Environment]::SetEnvironmentVariable('AR_x86_64_pc_windows_msvc', $libToolPath, 'Process')
-    [Environment]::SetEnvironmentVariable('RC', $rcPath, 'Process')
-    [Environment]::SetEnvironmentVariable('CFLAGS_x86_64_pc_windows_msvc', $null, 'Process')
-    [Environment]::SetEnvironmentVariable('CL', $null, 'Process')
-    [Environment]::SetEnvironmentVariable('_CL_', $null, 'Process')
-    [Environment]::SetEnvironmentVariable('LINK', $null, 'Process')
-    [Environment]::SetEnvironmentVariable('_LINK_', $null, 'Process')
-    [Environment]::SetEnvironmentVariable('VCToolsInstallDir', $msvcRoot + '\', 'Process')
-    [Environment]::SetEnvironmentVariable('VCToolsVersion', [string]$config.msvcToolsetVersion, 'Process')
-    [Environment]::SetEnvironmentVariable('WindowsSdkDir', $windowsSdkRoot + '\', 'Process')
-    [Environment]::SetEnvironmentVariable('WindowsSDKVersion', $windowsSdkVersion + '\', 'Process')
-    [Environment]::SetEnvironmentVariable('VisualStudioVersion', '17.0', 'Process')
-    [Environment]::SetEnvironmentVariable('GILBRETH_BUILD_GIT_SHA', $shortCommit, 'Process')
-    $linkerConfigPath = $linkPath.Replace('\', '/')
-    $targetRustFlags = @(
-        '-C',
-        'target-feature=+crt-static',
-        "--remap-path-prefix=$($repoRoot.Replace('\', '/'))=.",
-        "--remap-path-prefix=$(([string]$buildMarkers['user-profile']).Replace('\', '/'))=<user-profile>"
-    )
-    $targetRustFlagsJson = $targetRustFlags | ConvertTo-Json -Compress
-    $targetRustFlagsConfig = "target.$targetTriple.rustflags=$targetRustFlagsJson"
-    $null = Invoke-NativeText $cargoPath @(
-        'build', '--release', '--frozen', '--target', $targetTriple,
-        '--config', 'build.rustflags=[]',
-        '--config', $targetRustFlagsConfig,
-        '--config', "target.$targetTriple.linker='$linkerConfigPath'",
-        '-p', 'gilbreth-app', '--bin', 'gilbreth-app'
-    )
+$linkerConfigPath = $linkPath.Replace('\', '/')
+$targetRustFlags = @(
+    '-C',
+    'target-feature=+crt-static',
+    "--remap-path-prefix=$($repoRoot.Replace('\', '/'))=.",
+    "--remap-path-prefix=$(([string]$buildMarkers['user-profile']).Replace('\', '/'))=<user-profile>"
+)
+$targetRustFlagsJson = $targetRustFlags | ConvertTo-Json -Compress
+$targetRustFlagsConfig = "target.$targetTriple.rustflags=$targetRustFlagsJson"
+$nativePath = @(
+    $rustToolchainBin,
+    $msvcBin,
+    $windowsSdkBin,
+    (Join-Path $env:WINDIR 'System32'),
+    $env:WINDIR
+) -join ';'
+
+# The complete environment for the release build, applied to the Cargo child
+# process only. This script no longer modifies its own environment, so an
+# interrupted build cannot leave the caller's shell in a state that the
+# environment guard above would reject on the next run.
+#
+# $null removes a variable from the child rather than blanking it. VSINSTALLDIR
+# and VCINSTALLDIR are never set by this script but would otherwise be inherited
+# from a developer command prompt, so they are removed explicitly: the build must
+# not be able to see an ambient toolchain.
+$buildEnvironment = @{
+    'CARGO_INCREMENTAL'               = '0'
+    'SOURCE_DATE_EPOCH'               = $commitEpoch
+    'CARGO_TARGET_DIR'                = $workDir
+    'CARGO_BUILD_TARGET'              = $null
+    'RUSTFLAGS'                       = $null
+    'CARGO_ENCODED_RUSTFLAGS'         = $null
+    'RUSTC'                           = $rustcPath
+    'RUSTC_WRAPPER'                   = $null
+    'RUSTC_WORKSPACE_WRAPPER'         = $null
+    'GILBRETH_PACKAGE_TRUST_MODE'     = 'release-package'
+    'GILBRETH_PACKAGE_SIGNER_SUBJECT' = [string]$config.signerSimpleSubject
+    'GILBRETH_BUILD_GIT_SHA'          = $shortCommit
+    'PATH'                            = $nativePath
+    'INCLUDE'                         = ($includeDirectories -join ';')
+    'LIB'                             = ($libraryDirectories -join ';')
+    'LIBPATH'                         = $msvcLib
+    'CC_x86_64_pc_windows_msvc'       = $clPath
+    'AR_x86_64_pc_windows_msvc'       = $libToolPath
+    'RC'                              = $rcPath
+    'CFLAGS_x86_64_pc_windows_msvc'   = $null
+    'CL'                              = $null
+    '_CL_'                            = $null
+    'LINK'                            = $null
+    '_LINK_'                          = $null
+    'VCToolsInstallDir'               = $msvcRoot + '\'
+    'VCToolsVersion'                  = [string]$config.msvcToolsetVersion
+    'WindowsSdkDir'                   = $windowsSdkRoot + '\'
+    'WindowsSDKVersion'               = $windowsSdkVersion + '\'
+    'VisualStudioVersion'             = '17.0'
+    'VSINSTALLDIR'                    = $null
+    'VCINSTALLDIR'                    = $null
 }
-finally {
-    $env:CARGO_INCREMENTAL = $oldIncremental
-    $env:SOURCE_DATE_EPOCH = $oldEpoch
-    $env:CARGO_TARGET_DIR = $oldTargetDir
-    $env:CARGO_BUILD_TARGET = $oldBuildTarget
-    $env:RUSTFLAGS = $oldRustFlags
-    $env:CARGO_ENCODED_RUSTFLAGS = $oldEncodedRustFlags
-    $env:RUSTC = $oldRustc
-    $env:RUSTC_WRAPPER = $oldRustcWrapper
-    $env:RUSTC_WORKSPACE_WRAPPER = $oldRustcWorkspaceWrapper
-    $env:GILBRETH_PACKAGE_TRUST_MODE = $oldPackageTrustMode
-    $env:GILBRETH_PACKAGE_SIGNER_SUBJECT = $oldPackageSignerSubject
-    foreach ($name in $nativeBuildEnvironmentNames) {
-        [Environment]::SetEnvironmentVariable(
-            $name, $nativeBuildEnvironmentBefore[$name], 'Process')
-    }
-}
+
+$null = Invoke-NativeTextInEnvironment -FilePath $cargoPath -Environment $buildEnvironment -ArgumentList @(
+    'build', '--release', '--frozen', '--target', $targetTriple,
+    '--config', 'build.rustflags=[]',
+    '--config', $targetRustFlagsConfig,
+    '--config', "target.$targetTriple.linker='$linkerConfigPath'",
+    '-p', 'gilbreth-app', '--bin', 'gilbreth-app'
+)
 $builtExe = Join-Path $workDir "$targetTriple\release\gilbreth-app.exe"
 if (-not (Test-Path -LiteralPath $builtExe -PathType Leaf)) {
     throw "The isolated Cargo build did not produce gilbreth-app.exe."
