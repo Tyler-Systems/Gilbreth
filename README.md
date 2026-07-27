@@ -2,12 +2,20 @@
 
 **A privacy-respecting "time & motion" study for your computer — capture how you work, then find the friction worth removing.**
 
+[![Latest release](https://img.shields.io/github/v/release/Tyler-Systems/Gilbreth)](https://github.com/Tyler-Systems/Gilbreth/releases/latest)
 ![Status](https://img.shields.io/badge/status-preview-yellow)
 ![App](https://img.shields.io/badge/app-Rust-informational)
 ![Dashboard](https://img.shields.io/badge/dashboard-Rust%20%2F%20egui-informational)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-blue)
 ![Data](https://img.shields.io/badge/data-local%20only-brightgreen)
 ![License](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue)
+
+A century ago, Frank and Lillian Gilbreth filmed people at work, found the
+wasted motions, and made the work less tiring. Gilbreth does that for computer
+work: a small tray app records app switches, window changes, input timing and
+motion, and idle time into a local SQLite database, and a native dashboard
+shows you where your day actually went. Your data never leaves your machine:
+no outbound network calls, no telemetry, no account.
 
 ![Gilbreth's Today tab: a timeline of which application was in front, an hourly keyboard and mouse pulse, headline figures for active time and focus switches, and the patterns it flags as worth reviewing](crates/gilbreth-dashboard/tests/snapshots/windows/today_rich.png)
 
@@ -18,6 +26,50 @@ rules, how long things are kept, and how to delete them. Both images are the
 dashboard's own test snapshots, rendered from fixture data rather than a real
 person's activity, and regenerated whenever the interface changes.
 
+## Download
+
+**[Gilbreth v0.1.1 for Windows 11 (x64)](https://github.com/Tyler-Systems/Gilbreth/releases/latest)**
+is the current release, an early preview. Each release is a signed installer
+accompanied by `release-manifest.json` and `SHA256SUMS.txt`, and it is built
+to be checked: **[docs/VERIFY.md](docs/VERIFY.md)** walks through verifying
+all three files before you run Setup. Windows SmartScreen can still warn
+about a publisher it has not seen often yet.
+
+Not on Windows? macOS capture works in development builds with no packaged
+release yet, and developers on either platform can
+[build from source](#getting-started-developers). The website is
+**[gilbreth.tylersystems.com](https://gilbreth.tylersystems.com/)**.
+
+## First run
+
+Setup offers to launch Gilbreth when it finishes; it lives in the system
+tray. Open the dashboard from the tray menu and the Today tab starts filling
+within minutes: a timeline of what was in front, an hourly input pulse, and
+the day's headline figures. The discovery surfaces (routine motifs,
+interruption costs, the week digest) need a few days of normal use before
+they say anything interesting.
+
+From the first minute:
+
+- Pause all ambient capture with Ctrl+Alt+Shift+P or the tray's Pause capture
+  item; every stream also toggles off individually.
+- Typed key content is not stored by default. Keystrokes are counted and
+  classified, never recorded verbatim, unless you explicitly opt in.
+- Everything lives under `%LOCALAPPDATA%\Gilbreth`. The dashboard's Privacy
+  tab shows what is stored and lets you redact, prune, or erase it.
+- Updates are manual because Gilbreth never checks the network. New versions
+  are announced on the [website](https://gilbreth.tylersystems.com/) and the
+  [releases page](https://github.com/Tyler-Systems/Gilbreth/releases).
+
+## Follow along
+
+Gilbreth is built in the open by one person. Set the repository's Watch to
+releases-only for one notification per release, or join the
+[release list](https://gilbreth.tylersystems.com/#waitlist) for the email
+version. [Issues](https://github.com/Tyler-Systems/Gilbreth/issues) are open
+to everyone, bug reports and proposals alike, and a star makes the project
+easier for the next person to find.
+
 ## Project status
 
 | Area | Current state | Next gate |
@@ -27,7 +79,8 @@ person's activity, and regenerated whenever the interface changes.
 | Linux | Portable-library and CI hygiene only. | No Linux product release is planned. |
 | Contributions | Open. Issues need nothing; code needs a signed [contributor licence agreement](CONTRIBUTOR_AGREEMENT.md). | None open. |
 
-Start with the [maintainer guide](docs/MAINTAINING.md). The canonical project
+Maintainers and contributors: start with the
+[maintainer guide](docs/MAINTAINING.md). The canonical project
 documents are the [release process](docs/RELEASE_PROCESS.md),
 [architecture](docs/ARCHITECTURE.md), [verification guide](docs/VERIFY.md),
 [platform capability matrix](docs/CAPABILITY_MATRIX.md), and
@@ -146,15 +199,6 @@ Gilbreth/
 - **M6 — ML & beyond** — ML-driven recommendations and later platform expansion, including the macOS distribution work that a public macOS package waits on.
 
 **Completed:** **R0 "usable by a stranger" on 2026-07-04**, and **R1's first packaged Windows build on 2026-07-18**. Both happened in the private repository, and that package is not republished here. Discovery and macOS packaging come next. The friction-discovery triad already ships from captured data: **repetition** (routine motifs, cross-app copy hand-offs), **fragmentation** (focus metrics, resumption lag), and **fatigue** (Input Exposure).
-
-## Windows package
-
-Packages are published on the
-**[releases page](https://github.com/Tyler-Systems/Gilbreth/releases)**. Each
-release is an installer for Windows 11 x64, accompanied by
-`release-manifest.json` and `SHA256SUMS.txt`. Verify all three files with
-**[docs/VERIFY.md](docs/VERIFY.md)** before running Setup. Windows SmartScreen
-can still warn about a publisher it has not seen often yet.
 
 ---
 
