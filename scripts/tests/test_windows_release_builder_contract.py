@@ -75,9 +75,12 @@ def test_child_environment_removes_variables_rather_than_blanking_them() -> None
     Env:` and still trips a guard that only checks for presence.
     """
     builder = _builder()
-    function = "function Invoke-NativeTextInEnvironment" + builder.split(
-        "function Invoke-NativeTextInEnvironment", 1
-    )[1].split("\nfunction Get-Sha256Lower", 1)[0]
+    function = (
+        "function Invoke-NativeTextInEnvironment"
+        + builder.split("function Invoke-NativeTextInEnvironment", 1)[1].split(
+            "\nfunction Get-Sha256Lower", 1
+        )[0]
+    )
 
     script = f"""
 $ErrorActionPreference = 'Stop'
@@ -93,7 +96,14 @@ $out = Invoke-NativeTextInEnvironment -FilePath 'cmd.exe' `
 "PARENT_SET_LEAKED:$([bool]$env:PROBE_SET)"
 """
     result = subprocess.run(
-        [shutil.which("pwsh"), "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+        [
+            shutil.which("pwsh"),
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            script,
+        ],
         cwd=ROOT,
         capture_output=True,
         text=True,
@@ -104,9 +114,9 @@ $out = Invoke-NativeTextInEnvironment -FilePath 'cmd.exe' `
 
     assert "PROBE_KEEP=inherited" in out, "the child should inherit unlisted variables"
     assert "PROBE_SET=overridden" in out, "the child should receive overrides"
-    assert "PROBE_DROP" not in out.split("PARENT_DROP_STILL_SET")[0], (
-        "a $null value must remove the variable from the child, not blank it"
-    )
+    assert (
+        "PROBE_DROP" not in out.split("PARENT_DROP_STILL_SET")[0]
+    ), "a $null value must remove the variable from the child, not blank it"
     # And the caller is untouched either way.
     assert "PARENT_DROP_STILL_SET:True" in out
     assert "PARENT_SET_LEAKED:False" in out
