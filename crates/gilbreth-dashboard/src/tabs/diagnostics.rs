@@ -540,6 +540,12 @@ fn known_categories_value(logs: &LogReview) -> Option<String> {
             logs.stale_pre_erase_drop_warning_lines
         ));
     }
+    if logs.recovered_focus_warning_lines > 0 {
+        parts.push(format!(
+            "recovered-focus {}",
+            logs.recovered_focus_warning_lines
+        ));
+    }
     if parts.is_empty() {
         None
     } else {
@@ -552,7 +558,8 @@ fn health_check_section(ui: &mut egui::Ui, health: &DatabaseHealth, logs: &LogRe
     let known = known_categories_value(logs);
     let known_count = logs.clipboard_locked_warning_lines
         + logs.orphan_session_repair_warning_lines
-        + logs.stale_pre_erase_drop_warning_lines;
+        + logs.stale_pre_erase_drop_warning_lines
+        + logs.recovered_focus_warning_lines;
     let mut summary = if reasons.is_empty() {
         "all clean".to_string()
     } else {
@@ -636,6 +643,13 @@ fn health_check_section(ui: &mut egui::Ui, health: &DatabaseHealth, logs: &LogRe
                     value: stale_value,
                     flagged: !stale_ok,
                     tick: stale_ok,
+                    ..Default::default()
+                },
+                CheckRow {
+                    label: "Recovered focus rows".to_string(),
+                    value: health.recovered_focus_rows.to_string(),
+                    tick: health.recovered_focus_rows == 0,
+                    dim: health.recovered_focus_rows > 0,
                     ..Default::default()
                 },
                 CheckRow {
@@ -1220,6 +1234,7 @@ mod tests {
                 seq_gap_sessions: Vec::new(),
                 capture_events_dropped: 0,
                 stale_pre_erase_rows_dropped: 0,
+                recovered_focus_rows: 0,
                 min_ts: Some(1_000),
                 max_ts: Some(2_000),
             },

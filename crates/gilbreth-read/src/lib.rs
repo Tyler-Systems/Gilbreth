@@ -1035,6 +1035,101 @@ pub fn focus_intervals_with_active(
     Ok(add_active_foreground_ms(&focus, &inactive))
 }
 
+/// Beat cadence of the writer's `open_focus` heartbeat. Kept equal to
+/// `gilbreth_core::OPEN_FOCUS_BEAT_MS` (pinned by a test; this crate's
+/// runtime dependency surface deliberately excludes gilbreth-core) and
+/// documented as the contract in schema/README.md.
+const OPEN_FOCUS_BEAT_MS: i64 = 30_000;
+
+/// The writer's live open foreground segment, read under the freshness rule.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LiveOpenFocus {
+    session_id: i64,
+    exe: String,
+    start_ts: i64,
+    end_ts: i64,
+}
+
+/// Read the single `open_focus` row and accept it only while live: the
+/// high-water mark must be within two beats of `now_ms`. A staler row means
+/// a crashed pump whose startup repair has not run yet — that dwell belongs
+/// to repair, and consuming it here would double-count once the synthesized
+/// row lands. Readers never synthesize incomplete intervals from it; the
+/// span is exactly `[started_ts, high_water_ts]`, with the end clamped to
+/// `now_ms` so a writer clock a hair ahead cannot claim future time. Older
+/// databases without the table contribute nothing.
+fn live_open_focus(conn: &Connection, now_ms: i64) -> rusqlite::Result<Option<LiveOpenFocus>> {
+    if !table_exists(conn, "open_focus")? {
+        return Ok(None);
+    }
+    let Some((session_id, exe, started_ts, high_water_ts)) = conn
+        .query_row(
+            "SELECT session_id, exe, started_ts, high_water_ts FROM open_focus WHERE id = 1",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            },
+        )
+        .optional()?
+    else {
+        return Ok(None);
+    };
+    if now_ms.saturating_sub(high_water_ts) > 2 * OPEN_FOCUS_BEAT_MS {
+        return Ok(None);
+    }
+    let end_ts = high_water_ts.min(now_ms);
+    if end_ts <= started_ts {
+        return Ok(None);
+    }
+    let exe = match exe {
+        Some(exe) if !exe.is_empty() => exe,
+        _ => "(unknown)".to_string(),
+    };
+    Ok(Some(LiveOpenFocus {
+        session_id,
+        exe,
+        start_ts: started_ts,
+        end_ts,
+    }))
+}
+
+/// The open segment's contribution under a scope cutoff: raw dwell and the
+/// idle/sleep-subtracted active portion, using the same per-session
+/// subtraction completed rows get.
+fn open_focus_contribution(
+    conn: &Connection,
+    open: &LiveOpenFocus,
+    cutoff_ms: i64,
+) -> rusqlite::Result<Option<(i64, i64)>> {
+    let start_ts = open.start_ts.max(cutoff_ms);
+    if open.end_ts <= start_ts {
+        return Ok(None);
+    }
+    let interval = FocusInterval {
+        exe: open.exe.clone(),
+        title: String::new(),
+        session_id: open.session_id,
+        seq: i64::MAX,
+        local_date: local_date(open.end_ts),
+        start_ts,
+        end_ts: open.end_ts,
+        duration_ms: open.end_ts - start_ts,
+    };
+    let ids = [open.session_id];
+    let mut inactive = idle_intervals(conn, &ids, None)?;
+    inactive.extend(sleep_intervals(conn, &ids)?);
+    let active = add_active_foreground_ms(std::slice::from_ref(&interval), &inactive)
+        .pop()
+        .map(|row| row.active_foreground_ms)
+        .unwrap_or(0);
+    Ok(Some((interval.duration_ms, active)))
+}
+
 /// One ordered foreground dwell with display app and active time — the
 /// segment substrate episodes, runs, and spheres all build on.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -4205,12 +4300,20 @@ pub fn today_story(conn: &Connection, now_ms: i64) -> rusqlite::Result<TodayStor
         session_id: None,
     };
     let focus = focus_intervals_with_active(conn, &scope)?;
+    // The open-focus heartbeat (reader scope v1: active time and top app
+    // only). This runs before the empty early-return because a first
+    // unbroken stretch is exactly the case with zero completed rows.
+    let open = live_open_focus(conn, now_ms)?;
+    let open_contribution = match &open {
+        Some(open) => open_focus_contribution(conn, open, day_start)?,
+        None => None,
+    };
     let keystrokes: i64 = conn.query_row(
         "SELECT COUNT(*) FROM events WHERE kind = 'key' AND ts >= ? AND ts <= ?",
         rusqlite::params![day_start, now_ms],
         |row| row.get(0),
     )?;
-    if focus.is_empty() {
+    if focus.is_empty() && open_contribution.is_none() {
         return Ok(TodayStory {
             active_ms: 0,
             foreground_ms: 0,
@@ -4222,10 +4325,16 @@ pub fn today_story(conn: &Connection, now_ms: i64) -> rusqlite::Result<TodayStor
             longest_run_start_ms: None,
         });
     }
+    let (open_raw_ms, open_active_ms) = open_contribution.unwrap_or((0, 0));
 
     let mut active_by_app: BTreeMap<&str, i64> = BTreeMap::new();
     for row in &focus {
         *active_by_app.entry(row.exe.as_str()).or_insert(0) += row.active_foreground_ms;
+    }
+    if open_active_ms > 0 {
+        if let Some(open) = &open {
+            *active_by_app.entry(open.exe.as_str()).or_insert(0) += open_active_ms;
+        }
     }
     let mut top: Option<(&str, i64)> = None;
     for (&exe, &total) in &active_by_app {
@@ -4264,8 +4373,14 @@ pub fn today_story(conn: &Connection, now_ms: i64) -> rusqlite::Result<TodayStor
     }
 
     Ok(TodayStory {
-        active_ms: focus.iter().map(|row| row.active_foreground_ms).sum(),
-        foreground_ms: focus.iter().map(|row| row.duration_ms).sum(),
+        // The open interval counts toward both totals (it is real in-front
+        // time) but is not a completed switch and joins no run.
+        active_ms: focus
+            .iter()
+            .map(|row| row.active_foreground_ms)
+            .sum::<i64>()
+            + open_active_ms,
+        foreground_ms: focus.iter().map(|row| row.duration_ms).sum::<i64>() + open_raw_ms,
         focus_switches: focus.len() as i64,
         keystrokes,
         top_app,
@@ -4597,7 +4712,15 @@ pub fn weekly_digest_core(conn: &Connection, now_ms: i64) -> rusqlite::Result<We
     };
 
     let focus = focus_intervals(conn, &two_week_scope)?;
-    let ids: Vec<i64> = focus.iter().map(|row| row.session_id).collect();
+    // The open-focus heartbeat contributes to active time, top apps, and
+    // active days below — never to switches. Its session joins the id set
+    // so the away-span subtraction covers it even when it has no completed
+    // rows yet (the first-session case).
+    let open = live_open_focus(conn, now_ms)?;
+    let mut ids: Vec<i64> = focus.iter().map(|row| row.session_id).collect();
+    if let Some(open) = &open {
+        ids.push(open.session_id);
+    }
     let idle = idle_intervals(conn, &ids, None)?;
     let sleep = sleep_intervals(conn, &ids)?;
     let keystrokes: i64 = conn.query_row(
@@ -4650,6 +4773,32 @@ pub fn weekly_digest_core(conn: &Connection, now_ms: i64) -> rusqlite::Result<We
             this_switches += 1;
         } else if row.end_ts >= prior_start && row.end_ts < week_start {
             prior_switches += 1;
+        }
+    }
+
+    if let Some(open) = &open {
+        let band_start = open.start_ts.max(prior_start);
+        let band_end = open.end_ts.min(now_ms);
+        if band_end > band_start {
+            let session_away = away_by_session.get(&open.session_id).unwrap_or(&empty);
+            let app = display_app(Some(&open.exe));
+            let open_date = local_date(open.end_ts);
+            for (span_start, span_end) in subtract_spans(band_start, band_end, session_away) {
+                let this_part = overlap_ms(span_start, span_end, week_start, now_ms);
+                prior_active += overlap_ms(span_start, span_end, prior_start, week_start);
+                this_active += this_part;
+                if this_part != 0 {
+                    bump_ordered(
+                        &mut this_by_app,
+                        &mut this_by_app_index,
+                        app.clone(),
+                        this_part,
+                    );
+                    if week_dates.contains(&open_date) {
+                        active_dates.insert(open_date.clone());
+                    }
+                }
+            }
         }
     }
 
@@ -8978,6 +9127,11 @@ pub struct DatabaseHealth {
     /// `meta['stale_pre_erase_rows_dropped']`: motion rows captured before a
     /// secure-erase completion boundary and discarded when they arrived late.
     pub stale_pre_erase_rows_dropped: i64,
+    /// Focus rows synthesized by open-focus crash repair (payload flag
+    /// `recovered`): reconstructed dwell, reported explicitly but healthy —
+    /// repair working as designed after an ungraceful end (review_run's
+    /// recovered-focus category).
+    pub recovered_focus_rows: i64,
     /// Event time span, which also scopes the log review window.
     pub min_ts: Option<i64>,
     pub max_ts: Option<i64>,
@@ -9057,6 +9211,13 @@ pub fn database_health(conn: &Connection) -> rusqlite::Result<DatabaseHealth> {
     }
     let capture_events_dropped = health_meta_int(conn, "capture_events_dropped")?;
     let stale_pre_erase_rows_dropped = health_meta_int(conn, "stale_pre_erase_rows_dropped")?;
+    let recovered_focus_rows: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM events
+         WHERE kind = 'focus_changed'
+           AND json_extract(payload, '$.recovered') = 1",
+        [],
+        |row| row.get(0),
+    )?;
     let (min_ts, max_ts): (Option<i64>, Option<i64>) =
         conn.query_row("SELECT MIN(ts), MAX(ts) FROM events", [], |row| {
             Ok((row.get(0)?, row.get(1)?))
@@ -9068,6 +9229,7 @@ pub fn database_health(conn: &Connection) -> rusqlite::Result<DatabaseHealth> {
         seq_gap_sessions,
         capture_events_dropped,
         stale_pre_erase_rows_dropped,
+        recovered_focus_rows,
         min_ts,
         max_ts,
     })
@@ -10106,7 +10268,7 @@ mod tests {
         let conn = Connection::open_in_memory().expect("in-memory db");
         conn.execute_batch(
             "CREATE TABLE sessions (session_id INTEGER PRIMARY KEY, started_at INTEGER, ended_at INTEGER);
-             CREATE TABLE events (id INTEGER PRIMARY KEY, session_id INTEGER, seq INTEGER, ts INTEGER, kind TEXT);
+             CREATE TABLE events (id INTEGER PRIMARY KEY, session_id INTEGER, seq INTEGER, ts INTEGER, kind TEXT, payload TEXT NOT NULL DEFAULT '{}');
              CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
              INSERT INTO events (session_id, seq, ts, kind) VALUES
                  (1, 1, 1000, 'focus_changed'),
@@ -10216,6 +10378,26 @@ mod tests {
         let health = database_health(&conn).expect("health reads");
         assert_eq!(health.seq_gap_sessions, vec![2]);
         assert!(!health.healthy());
+    }
+
+    #[test]
+    fn database_health_counts_recovered_focus_rows_without_failing_the_verdict() {
+        let conn = health_fixture_db();
+        let health = database_health(&conn).expect("health reads");
+        assert_eq!(health.recovered_focus_rows, 0);
+
+        conn.execute(
+            "INSERT INTO events (session_id, seq, ts, kind, payload) VALUES
+                 (1, 4, 4000, 'focus_changed', '{\"recovered\":true}')",
+            [],
+        )
+        .expect("recovered row");
+        let health = database_health(&conn).expect("health reads");
+        assert_eq!(health.recovered_focus_rows, 1);
+        assert!(
+            health.healthy(),
+            "a repaired dwell is reported, not a failure"
+        );
     }
 
     #[test]
@@ -11319,6 +11501,159 @@ mod tests {
                     end_ts: 8_000,
                 },
             ]
+        );
+    }
+
+    /// Minimal schema for the open-focus reader tests: the columns the
+    /// focus/idle/sleep readers touch plus the migration-007 table.
+    fn open_focus_fixture_db() -> Connection {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        conn.execute_batch(
+            r#"
+            CREATE TABLE sessions (session_id INTEGER PRIMARY KEY, ended_at INTEGER);
+            CREATE TABLE events (
+                id INTEGER PRIMARY KEY,
+                session_id INTEGER NOT NULL,
+                seq INTEGER,
+                ts INTEGER NOT NULL,
+                kind TEXT NOT NULL,
+                exe TEXT,
+                prev_exe TEXT,
+                prev_title TEXT,
+                duration_ms INTEGER,
+                payload TEXT
+            );
+            CREATE TABLE open_focus (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                session_id INTEGER NOT NULL,
+                exe TEXT,
+                started_ts INTEGER NOT NULL,
+                high_water_ts INTEGER NOT NULL
+            );
+            INSERT INTO sessions (session_id, ended_at) VALUES (1, NULL);
+            "#,
+        )
+        .expect("fixture schema");
+        conn
+    }
+
+    /// Noon of a fixed local day: day math stays deterministic in any
+    /// timezone because the derived now sits far from both midnights.
+    fn open_focus_noon_now() -> i64 {
+        local_day_start_ms(1_783_590_000_000) + 12 * 3_600_000
+    }
+
+    #[test]
+    fn open_focus_beat_matches_the_core_constant() {
+        assert_eq!(OPEN_FOCUS_BEAT_MS, gilbreth_core::OPEN_FOCUS_BEAT_MS);
+    }
+
+    #[test]
+    fn today_story_counts_a_fresh_open_interval_without_completed_rows() {
+        let conn = open_focus_fixture_db();
+        let now_ms = open_focus_noon_now();
+        let started = now_ms - 20 * 60_000;
+        let high_water = now_ms - 10_000;
+        conn.execute(
+            "INSERT INTO open_focus (id, session_id, exe, started_ts, high_water_ts) \
+             VALUES (1, 1, 'editor.exe', ?1, ?2)",
+            rusqlite::params![started, high_water],
+        )
+        .expect("open row");
+
+        let story = today_story(&conn, now_ms).expect("story reads");
+        assert_eq!(story.active_ms, high_water - started);
+        assert_eq!(story.foreground_ms, high_water - started);
+        assert_eq!(story.focus_switches, 0, "an open segment is not a switch");
+        assert_eq!(story.top_app.as_deref(), Some("editor.exe"));
+        assert_eq!(story.longest_run_app, None, "the open segment joins no run");
+    }
+
+    #[test]
+    fn today_story_subtracts_idle_and_clips_the_open_interval_to_day_start() {
+        let conn = open_focus_fixture_db();
+        let now_ms = open_focus_noon_now();
+        let day_start = local_day_start_ms(now_ms);
+        let high_water = now_ms - 5_000;
+        // Started before local midnight: only the today part counts.
+        conn.execute(
+            "INSERT INTO open_focus (id, session_id, exe, started_ts, high_water_ts) \
+             VALUES (1, 1, 'editor.exe', ?1, ?2)",
+            rusqlite::params![day_start - 60_000, high_water],
+        )
+        .expect("open row");
+        // A closed idle span inside the open interval: idle rows carry the
+        // already-elapsed idle in duration_ms and pair with the next active.
+        let idle_start = now_ms - 10 * 60_000;
+        let idle_end = now_ms - 4 * 60_000;
+        conn.execute(
+            "INSERT INTO events (session_id, seq, ts, kind, duration_ms, payload) \
+             VALUES (1, 1, ?1, 'idle', 0, '{}'), (1, 2, ?2, 'active', NULL, '{}')",
+            rusqlite::params![idle_start, idle_end],
+        )
+        .expect("idle pair");
+
+        let story = today_story(&conn, now_ms).expect("story reads");
+        let raw = high_water - day_start;
+        assert_eq!(story.foreground_ms, raw);
+        assert_eq!(story.active_ms, raw - (idle_end - idle_start));
+    }
+
+    #[test]
+    fn today_story_ignores_a_stale_open_focus_row() {
+        let conn = open_focus_fixture_db();
+        let now_ms = open_focus_noon_now();
+        // One tick past two beats: a crashed pump whose repair has not run
+        // yet — the dwell belongs to repair, not the live reader.
+        conn.execute(
+            "INSERT INTO open_focus (id, session_id, exe, started_ts, high_water_ts) \
+             VALUES (1, 1, 'editor.exe', ?1, ?2)",
+            rusqlite::params![
+                now_ms - 30 * 60_000,
+                now_ms - 2 * OPEN_FOCUS_BEAT_MS - 1_000
+            ],
+        )
+        .expect("stale row");
+
+        let story = today_story(&conn, now_ms).expect("story reads");
+        assert_eq!(story.active_ms, 0);
+        assert_eq!(story.foreground_ms, 0);
+        assert_eq!(story.top_app, None);
+    }
+
+    #[test]
+    fn today_story_reads_unchanged_without_the_open_focus_table() {
+        let conn = open_focus_fixture_db();
+        conn.execute_batch("DROP TABLE open_focus")
+            .expect("older database shape");
+        let story = today_story(&conn, open_focus_noon_now()).expect("story reads");
+        assert_eq!(story.active_ms, 0);
+        assert_eq!(story.top_app, None);
+    }
+
+    #[test]
+    fn weekly_digest_counts_the_open_interval_but_never_as_a_switch() {
+        let conn = open_focus_fixture_db();
+        let now_ms = open_focus_noon_now();
+        let started = now_ms - 20 * 60_000;
+        let high_water = now_ms - 10_000;
+        conn.execute(
+            "INSERT INTO open_focus (id, session_id, exe, started_ts, high_water_ts) \
+             VALUES (1, 1, 'editor.exe', ?1, ?2)",
+            rusqlite::params![started, high_water],
+        )
+        .expect("open row");
+
+        let digest = weekly_digest_core(&conn, now_ms).expect("digest reads");
+        assert_eq!(digest.active_ms, high_water - started);
+        assert_eq!(digest.top_apps.len(), 1);
+        assert_eq!(digest.top_apps[0].app, "editor.exe");
+        assert_eq!(digest.top_apps[0].active_ms, high_water - started);
+        assert_eq!(digest.active_days, 1);
+        assert_eq!(
+            digest.switches_per_active_hour,
+            Some(0.0),
+            "the open segment is not a switch"
         );
     }
 

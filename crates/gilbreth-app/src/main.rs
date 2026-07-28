@@ -803,6 +803,7 @@ fn run_native_dashboard() -> Result<()> {
                 clipboard_locked_warning_lines: summary.clipboard_locked_warning_lines,
                 orphan_session_repair_warning_lines: summary.orphan_session_repair_warning_lines,
                 stale_pre_erase_drop_warning_lines: summary.stale_pre_erase_drop_warning_lines,
+                recovered_focus_warning_lines: summary.recovered_focus_warning_lines,
                 max_events_skipped: summary.max_events_skipped,
             }
         }),

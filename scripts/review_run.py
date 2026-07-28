@@ -26,6 +26,10 @@ STALE_PRE_ERASE_DROP_RE = re.compile(
     r"dropped stale pre-erase capture row",
     re.IGNORECASE,
 )
+RECOVERED_FOCUS_RE = re.compile(
+    r"recovered an open focus segment from an ungraceful shutdown",
+    re.IGNORECASE,
+)
 EVENTS_SKIPPED_RE = re.compile(r"events_skipped[=:\s]+(\d+)", re.IGNORECASE)
 LOG_TIMESTAMP_RE = re.compile(
     r"^(?P<timestamp>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}"
@@ -76,6 +80,12 @@ FROM events
 WHERE kind IN ('capture_paused', 'capture_resumed')
 GROUP BY kind
 """
+RECOVERED_FOCUS_SQL = """
+SELECT COUNT(*)
+FROM events
+WHERE kind = 'focus_changed'
+  AND json_extract(payload, '$.recovered') = 1
+"""
 CAPTURE_EVENTS_DROPPED_META_KEY = "capture_events_dropped"
 STALE_PRE_ERASE_ROWS_DROPPED_META_KEY = "stale_pre_erase_rows_dropped"
 
@@ -88,6 +98,7 @@ class LogSummary:
     clipboard_locked_warning_lines: int
     orphan_session_repair_warning_lines: int
     stale_pre_erase_drop_warning_lines: int
+    recovered_focus_warning_lines: int
     max_events_skipped: int
 
     @property
@@ -100,6 +111,7 @@ class LogSummary:
             self.clipboard_locked_warning_lines
             + self.orphan_session_repair_warning_lines
             + self.stale_pre_erase_drop_warning_lines
+            + self.recovered_focus_warning_lines
         )
         return max(0, self.warning_lines - known_warnings)
 
@@ -130,6 +142,7 @@ class DatabaseReview:
     power_counts: dict[str, int]
     process_counts: dict[str, int]
     pause_counts: dict[str, int]
+    recovered_focus_rows: int
     clipboard_rows: int
     clipboard_unavailable_rows: int
     capture_events_dropped: int
@@ -194,6 +207,7 @@ def review_database(db_path: Path) -> DatabaseReview:
         process_counts = {str(kind): int(count) for kind, count in process_rows}
         pause_rows = conn.execute(PAUSE_COUNTS_SQL).fetchall()
         pause_counts = {str(kind): int(count) for kind, count in pause_rows}
+        recovered_focus_rows = int(conn.execute(RECOVERED_FOCUS_SQL).fetchone()[0])
         clipboard_rows = int(
             conn.execute(
                 "SELECT COUNT(*) FROM events WHERE kind = 'clipboard_used'"
@@ -228,6 +242,7 @@ def review_database(db_path: Path) -> DatabaseReview:
         power_counts=power_counts,
         process_counts=process_counts,
         pause_counts=pause_counts,
+        recovered_focus_rows=recovered_focus_rows,
         clipboard_rows=clipboard_rows,
         clipboard_unavailable_rows=clipboard_unavailable_rows,
         capture_events_dropped=capture_events_dropped,
@@ -251,6 +266,7 @@ def review_logs(
             clipboard_locked_warning_lines=0,
             orphan_session_repair_warning_lines=0,
             stale_pre_erase_drop_warning_lines=0,
+            recovered_focus_warning_lines=0,
             max_events_skipped=0,
         )
 
@@ -260,6 +276,7 @@ def review_logs(
     clipboard_locked_warning_lines = 0
     orphan_session_repair_warning_lines = 0
     stale_pre_erase_drop_warning_lines = 0
+    recovered_focus_warning_lines = 0
     max_events_skipped = 0
     for path in files:
         try:
@@ -275,6 +292,8 @@ def review_logs(
                             orphan_session_repair_warning_lines += 1
                         if STALE_PRE_ERASE_DROP_RE.search(line):
                             stale_pre_erase_drop_warning_lines += 1
+                        if RECOVERED_FOCUS_RE.search(line):
+                            recovered_focus_warning_lines += 1
                     if LOG_ERROR_OR_PANIC_RE.search(line):
                         error_panic_lines += 1
                     for match in EVENTS_SKIPPED_RE.finditer(line):
@@ -290,6 +309,7 @@ def review_logs(
         clipboard_locked_warning_lines=clipboard_locked_warning_lines,
         orphan_session_repair_warning_lines=orphan_session_repair_warning_lines,
         stale_pre_erase_drop_warning_lines=stale_pre_erase_drop_warning_lines,
+        recovered_focus_warning_lines=recovered_focus_warning_lines,
         max_events_skipped=max_events_skipped,
     )
 
@@ -364,6 +384,7 @@ def format_report(review: DatabaseReview, logs: LogSummary | None) -> str:
             "Capture pause rows: "
             f"paused={capture_paused}, resumed={capture_resumed}, open={open_pauses}"
         ),
+        f"Recovered focus rows: {review.recovered_focus_rows}",
         f"Clipboard rows: total={review.clipboard_rows}, unavailable={review.clipboard_unavailable_rows}",
         (
             "Capture drops before write: unparseable"
@@ -389,6 +410,7 @@ def format_report(review: DatabaseReview, logs: LogSummary | None) -> str:
             f"clipboard_locked_warnings={logs.clipboard_locked_warning_lines}, "
             f"orphan_session_repair_warnings={logs.orphan_session_repair_warning_lines}, "
             f"stale_pre_erase_drop_warnings={logs.stale_pre_erase_drop_warning_lines}, "
+            f"recovered_focus_warnings={logs.recovered_focus_warning_lines}, "
             f"max_events_skipped={logs.max_events_skipped}"
         )
         if logs.files > 1:

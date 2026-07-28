@@ -319,6 +319,71 @@ def test_review_run_explains_an_orphan_pause_without_marking_it_unhealthy(
     assert "Capture pause rows: paused=1, resumed=0, open=1" in report
 
 
+def test_review_run_reports_recovered_focus_rows_without_marking_them_unhealthy(
+    tmp_path: Path,
+) -> None:
+    """A crash-repaired focus row is a reconstructed dwell, reported
+    explicitly (foreground-heartbeat design, decision 5) but healthy: the
+    repair is the system working as designed after an ungraceful end."""
+    path = tmp_path / "recovered.db"
+    create_db(path)
+    conn = sqlite3.connect(path)
+    try:
+        insert_session(conn, 1, started_at=1_000, ended_at=40_000)
+        insert_event(
+            conn,
+            1,
+            session_id=1,
+            seq=1,
+            ts=40_000,
+            source="foreground",
+            kind="focus_changed",
+            payload=(
+                '{"kind":"focus_changed","window":{"hwnd":0,"exe":"","title":"","pid":0},'
+                '"prev":{"hwnd":0,"exe":"","title":"","pid":0},'
+                '"previous_focused_for_ms":30000,"window_unfocused_for_ms":0,'
+                '"recovered":true}'
+            ),
+        )
+        insert_event(
+            conn,
+            2,
+            session_id=1,
+            seq=2,
+            ts=41_000,
+            source="foreground",
+            kind="focus_changed",
+            payload=(
+                '{"kind":"focus_changed","window":{"hwnd":1,"exe":"","title":"","pid":1},'
+                '"prev":null,"previous_focused_for_ms":0,"window_unfocused_for_ms":0}'
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir()
+    (logs_dir / "gilbreth.log").write_text(
+        "2026-07-28T09:00:00Z  WARN recovered an open focus segment from an "
+        "ungraceful shutdown session_id=1 recovered_ms=30000\n",
+        encoding="utf-8",
+    )
+
+    review = review_database(path)
+    logs = review_logs(logs_dir)
+    report = format_report(review, logs)
+
+    assert review.recovered_focus_rows == 1
+    assert review.healthy is True
+    assert logs.recovered_focus_warning_lines == 1
+    assert logs.unknown_warning_lines == 0
+    assert logs.healthy is True
+    assert "Status: PASS" in report
+    assert "Recovered focus rows: 1" in report
+    assert "recovered_focus_warnings=1" in report
+
+
 def test_review_run_flags_capture_events_dropped(tmp_path: Path) -> None:
     path = tmp_path / "capture-drops.db"
     create_db(path)

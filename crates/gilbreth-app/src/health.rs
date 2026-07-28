@@ -19,6 +19,7 @@ pub struct LogReviewSummary {
     pub clipboard_locked_warning_lines: i64,
     pub orphan_session_repair_warning_lines: i64,
     pub stale_pre_erase_drop_warning_lines: i64,
+    pub recovered_focus_warning_lines: i64,
     pub max_events_skipped: i64,
 }
 
@@ -30,7 +31,8 @@ impl LogReviewSummary {
         (self.warning_lines
             - self.clipboard_locked_warning_lines
             - self.orphan_session_repair_warning_lines
-            - self.stale_pre_erase_drop_warning_lines)
+            - self.stale_pre_erase_drop_warning_lines
+            - self.recovered_focus_warning_lines)
             .max(0)
     }
 
@@ -72,6 +74,14 @@ fn stale_pre_erase_drop_re() -> &'static Regex {
     RE.get_or_init(|| {
         Regex::new(r"(?i)dropped stale pre-erase capture row")
             .expect("stale pre-erase drop pattern compiles")
+    })
+}
+
+fn recovered_focus_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"(?i)recovered an open focus segment from an ungraceful shutdown")
+            .expect("recovered focus pattern compiles")
     })
 }
 
@@ -131,6 +141,9 @@ pub fn classify_line(line: &str, summary: &mut LogReviewSummary) {
         }
         if stale_pre_erase_drop_re().is_match(line) {
             summary.stale_pre_erase_drop_warning_lines += 1;
+        }
+        if recovered_focus_re().is_match(line) {
+            summary.recovered_focus_warning_lines += 1;
         }
     }
     if error_or_panic_re().is_match(line) {
@@ -241,11 +254,17 @@ mod tests {
             "2026-07-09T10:04:00Z WARN gilbreth_store: dropped stale pre-erase capture row",
             &mut summary,
         );
+        classify_line(
+            "2026-07-28T10:05:00Z WARN gilbreth_store: recovered an open focus segment \
+             from an ungraceful shutdown session_id=1 recovered_ms=30000",
+            &mut summary,
+        );
 
-        assert_eq!(summary.warning_lines, 4);
+        assert_eq!(summary.warning_lines, 5);
         assert_eq!(summary.clipboard_locked_warning_lines, 1);
         assert_eq!(summary.orphan_session_repair_warning_lines, 1);
         assert_eq!(summary.stale_pre_erase_drop_warning_lines, 1);
+        assert_eq!(summary.recovered_focus_warning_lines, 1);
         assert_eq!(summary.unknown_warning_lines(), 1);
         assert_eq!(summary.error_panic_lines, 2);
         assert_eq!(summary.max_events_skipped, 9);
