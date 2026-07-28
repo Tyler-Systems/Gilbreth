@@ -131,6 +131,14 @@ pub const EXCLUDED_APPS_CAPTION: &str = "Add or edit one executable filename per
      line to remove it. Matching ignores capitalization. After saving, restart Gilbreth to apply \
      exclusions; existing rows are unchanged. While this list is non-empty, notification counts \
      are also paused because Windows does not provide a reliable executable identity.";
+/// The macOS half of the exclusion fail-closed rule (owner decision,
+/// 2026-07-28): without the Foreground stream there is no app identity to
+/// match exclusions against, so input capture pauses rather than storing
+/// rows that could belong to an excluded app.
+#[cfg(target_os = "macos")]
+pub const EXCLUDED_APPS_MACOS_FOREGROUND_CAPTION: &str = "While this list is non-empty and the \
+     Foreground stream is off, keyboard and mouse capture is also paused because macOS provides \
+     no app identity without Foreground.";
 pub const NOTIFICATION_ROW_TITLE: &str = "Notification counts";
 pub const MOUSE_RETENTION_ROW_TITLE: &str = "Keep raw mouse movement for";
 pub const MOUSE_RETENTION_CAPTION: &str = "Housekeeping for the mouse-speed lenses. Older \
@@ -581,6 +589,8 @@ fn settings_section(ui: &mut egui::Ui, view: &PrivacyView<'_>, actions: &mut Vec
                 bump_advanced_buffer_revision(ui.ctx(), "excluded-apps");
             }
             hint_line(ui, EXCLUDED_APPS_CAPTION);
+            #[cfg(target_os = "macos")]
+            hint_line(ui, EXCLUDED_APPS_MACOS_FOREGROUND_CAPTION);
         },
     );
 

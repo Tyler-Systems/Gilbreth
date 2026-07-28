@@ -1404,6 +1404,15 @@ impl PanicActionCutoff {
 
 #[derive(Clone, Debug)]
 pub enum WriterCommand {
+    /// Invalidate the writer policy's live focus attribution. The app sends
+    /// this when the user turns the Foreground stream off, before closing the
+    /// stream gate: rows still in flight carry their own attribution, and
+    /// rows without any fail closed from here on (exclusion fail-open fix).
+    /// The ack exists so tests can order the command against later inputs;
+    /// the tray drops its receiver without waiting.
+    ForgetFocusAttribution {
+        ack: Sender<()>,
+    },
     StartRecording {
         request_id: Option<i64>,
         title: Option<String>,
@@ -2357,6 +2366,10 @@ fn handle_writer_command(
     runtime: &mut WriterRuntime<'_>,
 ) {
     match command {
+        WriterCommand::ForgetFocusAttribution { ack } => {
+            runtime.policy.forget_focus_attribution();
+            let _ = ack.send(());
+        }
         WriterCommand::StartRecording {
             request_id,
             title,
@@ -6850,6 +6863,127 @@ mod tests {
         let text = String::from_utf8(bytes).expect("utf8").to_ascii_lowercase();
         assert!(!text.contains("notepad"));
         assert!(!text.contains("excluded-private-title"));
+    }
+
+    #[test]
+    fn forget_focus_attribution_command_fails_closed_for_unattributed_input() {
+        let dir = tempdir().expect("temp dir");
+        let path = dir.path().join("gilbreth.db");
+        let store = GilbrethStore::open(&path).expect("store opens");
+        let base = Instant::now();
+        let session_id = store.create_session(1_000, "test").expect("session");
+        let sequencer = Sequencer::new(session_id, SessionTimebase::new(base, 1_000));
+        let stop = StopToken::new();
+        let (tx, rx) = bounded(8);
+        let (command_tx, command_rx) = bounded(4);
+        let handle = std::thread::spawn(move || {
+            run_writer_with_commands(
+                store,
+                rx,
+                command_rx,
+                stop,
+                sequencer,
+                Policy::identity().with_excluded_apps(["private.exe"]),
+                WriterConfig {
+                    flush_interval: Duration::from_secs(60),
+                    batch_size: 1,
+                    ..WriterConfig::default()
+                },
+            )
+        });
+
+        let windowless_key = |key: &str, captured_at: Instant| {
+            Captured::new(
+                Source::Keyboard,
+                captured_at,
+                EventPayload::Key {
+                    key: key.to_string(),
+                    mods: Modifiers::default(),
+                    window: None,
+                    key_class: None,
+                },
+            )
+        };
+        let mut allowed_focus = captured_focus("allowed", base + Duration::from_millis(10));
+        if let EventPayload::FocusChanged { window, .. } = &mut allowed_focus.payload {
+            window.exe = r"C:\Windows\System32\calc.exe".to_string();
+        }
+        tx.send(WriterInput::Motion(allowed_focus.clone()))
+            .expect("allowed focus row");
+        tx.send(WriterInput::Motion(windowless_key(
+            "A",
+            base + Duration::from_millis(20),
+        )))
+        .expect("latched window-less key");
+
+        // Wait until both rows are durably written before sending the
+        // command: the select loop draws from the event and command channels
+        // in no particular order, so the ack below only sequences inputs
+        // sent AFTER it was received.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let count: i64 = Connection::open(&path)
+                .and_then(|conn| {
+                    conn.query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))
+                })
+                .unwrap_or(0);
+            if count >= 2 {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "latched rows never reached the store"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        let (ack_tx, ack_rx) = bounded(1);
+        command_tx
+            .send(WriterCommand::ForgetFocusAttribution { ack: ack_tx })
+            .expect("forget command");
+        ack_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("forget acked");
+
+        // Unattributed input after the forget fails closed; a later focus
+        // row re-arms the latch end to end.
+        tx.send(WriterInput::Motion(windowless_key(
+            "B",
+            base + Duration::from_millis(30),
+        )))
+        .expect("post-forget key");
+        allowed_focus.captured_at = base + Duration::from_millis(40);
+        tx.send(WriterInput::Motion(allowed_focus))
+            .expect("re-arming focus row");
+        tx.send(WriterInput::Motion(windowless_key(
+            "C",
+            base + Duration::from_millis(50),
+        )))
+        .expect("re-armed key");
+        drop(tx);
+        drop(command_tx);
+        let report = handle.join().expect("join").expect("writer");
+        assert_eq!(report.events_written, 4);
+
+        let conn = Connection::open(&path).expect("reader");
+        let rows: Vec<(i64, String, Option<String>)> = conn
+            .prepare("SELECT seq, kind, key FROM events ORDER BY seq")
+            .expect("prepare")
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .expect("query")
+            .collect::<Result<_, _>>()
+            .expect("rows");
+        assert_eq!(
+            rows.iter().map(|row| row.0).collect::<Vec<_>>(),
+            vec![1, 2, 3, 4],
+            "the dropped key must leave neither a row nor a seq hole"
+        );
+        let keys: Vec<&str> = rows
+            .iter()
+            .filter(|row| row.1 == "key")
+            .filter_map(|row| row.2.as_deref())
+            .collect();
+        assert_eq!(keys, vec!["A", "C"], "the post-forget key must not store");
     }
 
     #[test]

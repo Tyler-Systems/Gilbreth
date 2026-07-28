@@ -2285,6 +2285,23 @@ impl Tray {
 
     fn toggle_stream(&mut self, stream: CaptureStream) {
         let enabled = !self.config.capture.is_enabled(stream);
+        if stream == CaptureStream::Foreground && !enabled {
+            // No FocusChanged can correct the writer policy's focus latch
+            // while the stream is off, so the latch must be forgotten or
+            // window-less input inherits the last verdict for the whole off
+            // period (the exclusion fail-open). Sent BEFORE the gate closes:
+            // rows captured in between still carry live attribution, so any
+            // channel race over-drops instead of failing open. The ack is a
+            // test affordance; the tray does not wait.
+            let (ack, _) = bounded(1);
+            if let Err(error) = self
+                .privacy_commands
+                .writer_commands
+                .send(WriterCommand::ForgetFocusAttribution { ack })
+            {
+                error!(%error, "failed to send focus-attribution forget");
+            }
+        }
         self.config.capture.set_enabled(stream, enabled);
         self.controls.set_enabled(stream, enabled);
         self.menu_item(stream).set_checked(enabled);

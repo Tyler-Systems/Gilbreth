@@ -2221,7 +2221,10 @@ pub struct Policy {
     excluded_notification_keys: HashSet<String>,
     /// Sensitive-context rows carry no WindowRef in schema v1. The immediately
     /// preceding focus attribution is therefore their only app attribution.
-    current_focus_excluded: RefCell<bool>,
+    /// `None` means no live attribution exists (never observed, or forgotten
+    /// because the Foreground stream stopped): rows that depend on the latch
+    /// must fail closed while any exclusion is configured.
+    current_focus_excluded: RefCell<Option<bool>>,
     active_sensitive_reasons: RefCell<HashSet<SensitiveContextReason>>,
 }
 
@@ -2297,6 +2300,24 @@ impl Policy {
         self.excluded_apps.contains(&exe_basename_lower(exe))
     }
 
+    /// The exclusion verdict for rows whose only app attribution is the live
+    /// focus latch. Without live attribution the row could belong to an
+    /// excluded app, so it fails closed while any exclusion is configured.
+    fn latched_focus_excluded(&self) -> bool {
+        self.current_focus_excluded
+            .borrow()
+            .unwrap_or_else(|| !self.excluded_apps.is_empty())
+    }
+
+    /// Invalidate the live focus attribution. The app drives this when the
+    /// Foreground stream stops: no `FocusChanged` can arrive to correct the
+    /// latch while the stream is off, so keeping the last verdict would let
+    /// unattributed rows inherit a stale not-excluded answer for the whole
+    /// off period. The next `FocusChanged` re-arms the latch.
+    pub fn forget_focus_attribution(&self) {
+        *self.current_focus_excluded.borrow_mut() = None;
+    }
+
     pub fn excludes_action(&self, action: &ActionCapture) -> bool {
         action
             .exe
@@ -2340,7 +2361,7 @@ impl Policy {
                 window_unfocused_for_ms,
             } => {
                 let current_is_excluded = self.excludes_exe(&window.exe);
-                *self.current_focus_excluded.borrow_mut() = current_is_excluded;
+                *self.current_focus_excluded.borrow_mut() = Some(current_is_excluded);
                 if current_is_excluded {
                     return false;
                 }
@@ -2369,7 +2390,7 @@ impl Policy {
             | EventPayload::MouseWheel { window, .. }
             | EventPayload::MouseMove { window, .. }
                 if window.as_ref().map_or_else(
-                    || *self.current_focus_excluded.borrow(),
+                    || self.latched_focus_excluded(),
                     |window| self.excludes_exe(&window.exe),
                 ) =>
             {
@@ -2391,7 +2412,7 @@ impl Policy {
             }
             EventPayload::SensitiveContextEntered { .. }
             | EventPayload::SensitiveContextExited { .. }
-                if *self.current_focus_excluded.borrow() =>
+                if self.latched_focus_excluded() =>
             {
                 // Keep the state machine honest even though the attributed
                 // boundary row itself is intentionally absent from storage.
@@ -3126,6 +3147,168 @@ mod tests {
                 count: 1,
             }))
             .is_some());
+    }
+
+    fn unattributed_key() -> EventPayload {
+        EventPayload::Key {
+            key: "A".to_string(),
+            mods: Modifiers::default(),
+            window: None,
+            key_class: None,
+        }
+    }
+
+    fn unattributed_mouse_move() -> EventPayload {
+        EventPayload::MouseMove {
+            dx_total: 1,
+            dy_total: 1,
+            distance_px: 1,
+            raw_event_count: 1,
+            duration_ms: 1,
+            x: None,
+            y: None,
+            window: None,
+            input_origin: None,
+        }
+    }
+
+    #[test]
+    fn exclusion_never_observed_focus_fails_closed_for_unattributed_input() {
+        // The first fail-open ordering: the Foreground stream was off from
+        // process start, so no FocusChanged ever reached the latch. With an
+        // exclusion configured, window-less input could belong to the
+        // excluded app and must not store.
+        let policy = Policy::identity().with_excluded_apps(["private.exe"]);
+        assert!(policy.apply(envelope(unattributed_key())).is_none());
+        assert!(policy.apply(envelope(unattributed_mouse_move())).is_none());
+
+        // Attributed rows keep their per-row verdicts: the latch is not
+        // consulted in either direction.
+        assert!(policy
+            .apply(envelope(EventPayload::Key {
+                key: "A".to_string(),
+                mods: Modifiers::default(),
+                window: Some(attributed_window("allowed.exe")),
+                key_class: None,
+            }))
+            .is_some());
+        assert!(policy
+            .apply(envelope(EventPayload::Key {
+                key: "A".to_string(),
+                mods: Modifiers::default(),
+                window: Some(attributed_window("private.exe")),
+                key_class: None,
+            }))
+            .is_none());
+
+        // No exclusions configured: nothing to protect, capture proceeds.
+        assert!(Policy::identity()
+            .apply(envelope(unattributed_key()))
+            .is_some());
+    }
+
+    #[test]
+    fn exclusion_observed_then_stopped_focus_fails_closed_after_forget() {
+        // The second fail-open ordering, the ordinary user path: focus was
+        // observed on an allowed app, then the Foreground stream stopped.
+        // The latched not-excluded verdict must not survive the stop.
+        let policy = Policy::identity().with_excluded_apps(["private.exe"]);
+        let allowed = attributed_window("allowed.exe");
+
+        assert!(policy
+            .apply(envelope(EventPayload::FocusChanged {
+                window: allowed.clone(),
+                prev: None,
+                previous_focused_for_ms: 0,
+                window_unfocused_for_ms: 0,
+            }))
+            .is_some());
+        // While the stream runs, the latch attributes window-less input to
+        // the allowed app.
+        assert!(policy.apply(envelope(unattributed_key())).is_some());
+
+        policy.forget_focus_attribution();
+        assert!(policy.apply(envelope(unattributed_key())).is_none());
+        assert!(policy.apply(envelope(unattributed_mouse_move())).is_none());
+        // Attributed input is unaffected by the forgotten latch.
+        assert!(policy
+            .apply(envelope(EventPayload::Key {
+                key: "A".to_string(),
+                mods: Modifiers::default(),
+                window: Some(allowed.clone()),
+                key_class: None,
+            }))
+            .is_some());
+
+        // A re-enabled stream re-arms the latch with its next focus row.
+        assert!(policy
+            .apply(envelope(EventPayload::FocusChanged {
+                window: allowed,
+                prev: None,
+                previous_focused_for_ms: 0,
+                window_unfocused_for_ms: 0,
+            }))
+            .is_some());
+        assert!(policy.apply(envelope(unattributed_key())).is_some());
+
+        // Forgetting an excluded-focus latch stays closed: forget never
+        // fails open regardless of what the latch held.
+        let excluded = attributed_window("private.exe");
+        assert!(policy
+            .apply(envelope(EventPayload::FocusChanged {
+                window: excluded,
+                prev: None,
+                previous_focused_for_ms: 0,
+                window_unfocused_for_ms: 0,
+            }))
+            .is_none());
+        policy.forget_focus_attribution();
+        assert!(policy.apply(envelope(unattributed_key())).is_none());
+    }
+
+    #[test]
+    fn sensitive_rows_under_unknown_latch_drop_but_update_suppression() {
+        // Sensitive-context rows carry no WindowRef, so the latch is their
+        // only attribution. Under an unknown latch with exclusions they fail
+        // closed like unattributed input, while the suppression state
+        // machine keeps tracking so following keys still redact.
+        let policy = Policy::identity()
+            .with_excluded_apps(["private.exe"])
+            .with_sensitive_context_suppression(true);
+
+        assert!(policy
+            .apply(envelope(EventPayload::SensitiveContextEntered {
+                reason: SensitiveContextReason::PasswordField,
+            }))
+            .is_none());
+        let key = policy
+            .apply(envelope(EventPayload::Key {
+                key: "P".to_string(),
+                mods: Modifiers::default(),
+                window: Some(attributed_window("allowed.exe")),
+                key_class: None,
+            }))
+            .expect("attributed allowed key stores");
+        assert!(key.is_sensitive);
+        match key.payload {
+            EventPayload::Key { key, .. } => assert_eq!(key, "<redacted>"),
+            _ => panic!("expected key event"),
+        }
+
+        assert!(policy
+            .apply(envelope(EventPayload::SensitiveContextExited {
+                reason: SensitiveContextReason::PasswordField,
+            }))
+            .is_none());
+        let key_after = policy
+            .apply(envelope(EventPayload::Key {
+                key: "A".to_string(),
+                mods: Modifiers::default(),
+                window: Some(attributed_window("allowed.exe")),
+                key_class: None,
+            }))
+            .expect("post-exit key stores");
+        assert!(!key_after.is_sensitive);
     }
 
     #[test]
