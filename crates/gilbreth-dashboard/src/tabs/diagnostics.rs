@@ -596,10 +596,20 @@ fn health_check_section(ui: &mut egui::Ui, health: &DatabaseHealth, logs: &LogRe
         |ui| {
             let integrity_ok = health.integrity_check == "ok";
             let fk_seq_ok = health.foreign_key_issues == 0 && health.seq_gap_sessions.is_empty();
-            let seq_status = if health.seq_gap_sessions.is_empty() {
-                "ok".to_string()
-            } else {
-                format!(
+            // The three-arm wording review_run's Seq continuity line uses:
+            // unexplained gaps flag, gaps covered by recorded deletions
+            // (migration 008) read as known.
+            let explained_note = format!(
+                "gaps in sessions {} explained by recorded deletions",
+                health
+                    .explained_gap_sessions
+                    .iter()
+                    .map(|value| value.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            let seq_status = if !health.seq_gap_sessions.is_empty() {
+                let mut status = format!(
                     "gaps in sessions {}",
                     health
                         .seq_gap_sessions
@@ -607,7 +617,15 @@ fn health_check_section(ui: &mut egui::Ui, health: &DatabaseHealth, logs: &LogRe
                         .map(|value| value.to_string())
                         .collect::<Vec<_>>()
                         .join(", ")
-                )
+                );
+                if !health.explained_gap_sessions.is_empty() {
+                    status.push_str(&format!("; {explained_note}"));
+                }
+                status
+            } else if !health.explained_gap_sessions.is_empty() {
+                format!("ok ({explained_note})")
+            } else {
+                "ok".to_string()
             };
             let drops_value = if health.capture_events_dropped < 0 {
                 "unparseable".to_string()
@@ -674,6 +692,18 @@ fn health_check_section(ui: &mut egui::Ui, health: &DatabaseHealth, logs: &LogRe
                     ..Default::default()
                 },
             ];
+            // Same placement as review_run's "Recorded deletions: N rows"
+            // line; the row is absent on a pre-008 database, matching the
+            // script's skip-the-line behavior.
+            if let Some(rows_deleted) = health.deletion_audit_rows_deleted {
+                rows.push(CheckRow {
+                    label: "Recorded deletions".to_string(),
+                    value: format!("{rows_deleted} rows"),
+                    tick: rows_deleted == 0,
+                    dim: rows_deleted > 0,
+                    ..Default::default()
+                });
+            }
             if let Some(known) = known {
                 rows.push(CheckRow {
                     label: "Known categories (non-gating)".to_string(),
@@ -1239,6 +1269,8 @@ mod tests {
                 foreign_key_issues: 0,
                 user_version: 9,
                 seq_gap_sessions: Vec::new(),
+                explained_gap_sessions: Vec::new(),
+                deletion_audit_rows_deleted: Some(0),
                 capture_events_dropped: 0,
                 stale_pre_erase_rows_dropped: 0,
                 recovered_focus_rows: 0,
@@ -1256,6 +1288,8 @@ mod tests {
 
         let mut health = health;
         health.seq_gap_sessions = vec![4, 7];
+        // Explained gaps are a known category, never a REVIEW reason.
+        health.explained_gap_sessions = vec![2];
         health.capture_events_dropped = -1;
         health.stale_pre_erase_rows_dropped = 3;
         let mut logs = logs;

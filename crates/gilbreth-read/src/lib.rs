@@ -9168,8 +9168,17 @@ pub struct DatabaseHealth {
     pub foreign_key_issues: i64,
     pub user_version: i64,
     /// Sessions whose event and action-event rows don't form a dense,
-    /// duplicate-free shared seq span.
+    /// duplicate-free shared seq span — after subtracting holes covered by
+    /// recorded deletions (migration 008). This is the REVIEW-driving set;
+    /// covered sessions land in `explained_gap_sessions`.
     pub seq_gap_sessions: Vec<i64>,
+    /// Sessions whose seq holes are fully covered by deletion_audit spans:
+    /// recorded deletions, not data loss (review_run's explained category).
+    pub explained_gap_sessions: Vec<i64>,
+    /// Total rows_deleted recorded in deletion_audit; None when the table
+    /// does not exist (pre-008 database or old archive), matching
+    /// review_run's skip-the-line behavior.
+    pub deletion_audit_rows_deleted: Option<i64>,
     /// `meta['capture_events_dropped']`: a missing key is a pre-counter DB
     /// and reads as 0 (healthy); an unparseable value reads as -1 so the
     /// verdict fails REVIEW instead of silently passing (review_run's
@@ -9218,6 +9227,68 @@ fn health_meta_int(conn: &Connection, key: &str) -> rusqlite::Result<i64> {
     })
 }
 
+fn merged_audit_spans(mut spans: Vec<(i64, i64)>) -> Vec<(i64, i64)> {
+    spans.sort_unstable();
+    let mut merged: Vec<(i64, i64)> = Vec::new();
+    for (start, end) in spans {
+        match merged.last_mut() {
+            Some((_, last_end)) if start <= *last_end + 1 => {
+                *last_end = (*last_end).max(end);
+            }
+            _ => merged.push((start, end)),
+        }
+    }
+    merged
+}
+
+/// True when every missing seq in the session's shared span falls inside a
+/// recorded-deletion span (migration 008). Duplicate seqs are never a
+/// recorded deletion, and a missing run outside the audited spans still
+/// reads as possible data loss — both keep the session flagged. Mirrors
+/// review_run's `_session_gap_is_explained`.
+fn session_gap_is_explained(
+    conn: &Connection,
+    session_id: i64,
+    has_action_events: bool,
+    spans: &[(i64, i64)],
+) -> rusqlite::Result<bool> {
+    if spans.is_empty() {
+        return Ok(false);
+    }
+    let seq_sql = if has_action_events {
+        "SELECT seq FROM events WHERE session_id = ?1
+         UNION ALL
+         SELECT seq FROM action_events WHERE session_id = ?1"
+    } else {
+        "SELECT seq FROM events WHERE session_id = ?1"
+    };
+    let mut stmt = conn.prepare(seq_sql)?;
+    let mut seqs: Vec<i64> = stmt
+        .query_map([session_id], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    seqs.sort_unstable();
+    let merged = merged_audit_spans(spans.to_vec());
+    let mut previous: Option<i64> = None;
+    for seq in seqs {
+        if previous == Some(seq) {
+            return Ok(false);
+        }
+        if let Some(previous) = previous {
+            if seq > previous + 1 {
+                let (run_start, run_end) = (previous + 1, seq - 1);
+                if !merged
+                    .iter()
+                    .any(|(start, end)| *start <= run_start && run_end <= *end)
+                {
+                    return Ok(false);
+                }
+            }
+        }
+        previous = Some(seq);
+    }
+    Ok(true)
+}
+
 pub fn database_health(conn: &Connection) -> rusqlite::Result<DatabaseHealth> {
     let integrity_check: String = conn.query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
     let foreign_key_issues = {
@@ -9230,9 +9301,10 @@ pub fn database_health(conn: &Connection) -> rusqlite::Result<DatabaseHealth> {
         count
     };
     let user_version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    let mut seq_gap_sessions = Vec::new();
+    let has_action_events = table_exists(conn, "action_events")?;
+    let mut flagged_gap_sessions: Vec<i64> = Vec::new();
     {
-        let seq_gap_sql = if table_exists(conn, "action_events")? {
+        let seq_gap_sql = if has_action_events {
             "WITH sequenced_rows AS (
                  SELECT session_id, seq
                  FROM events
@@ -9257,7 +9329,39 @@ pub fn database_health(conn: &Connection) -> rusqlite::Result<DatabaseHealth> {
         let mut stmt = conn.prepare(seq_gap_sql)?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
-            seq_gap_sessions.push(row.get(0)?);
+            flagged_gap_sessions.push(row.get(0)?);
+        }
+    }
+    let (deletion_audit_rows_deleted, audit_spans) = if table_exists(conn, "deletion_audit")? {
+        let total: i64 = conn.query_row(
+            "SELECT COALESCE(SUM(rows_deleted), 0) FROM deletion_audit",
+            [],
+            |row| row.get(0),
+        )?;
+        let mut spans: HashMap<i64, Vec<(i64, i64)>> = HashMap::new();
+        let mut stmt = conn.prepare("SELECT session_id, seq_min, seq_max FROM deletion_audit")?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            spans
+                .entry(row.get(0)?)
+                .or_default()
+                .push((row.get(1)?, row.get(2)?));
+        }
+        (Some(total), spans)
+    } else {
+        (None, HashMap::new())
+    };
+    let mut seq_gap_sessions = Vec::new();
+    let mut explained_gap_sessions = Vec::new();
+    for flagged_session in flagged_gap_sessions {
+        let spans = audit_spans
+            .get(&flagged_session)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        if session_gap_is_explained(conn, flagged_session, has_action_events, spans)? {
+            explained_gap_sessions.push(flagged_session);
+        } else {
+            seq_gap_sessions.push(flagged_session);
         }
     }
     let capture_events_dropped = health_meta_int(conn, "capture_events_dropped")?;
@@ -9278,6 +9382,8 @@ pub fn database_health(conn: &Connection) -> rusqlite::Result<DatabaseHealth> {
         foreign_key_issues,
         user_version,
         seq_gap_sessions,
+        explained_gap_sessions,
+        deletion_audit_rows_deleted,
         capture_events_dropped,
         stale_pre_erase_rows_dropped,
         recovered_focus_rows,
@@ -10429,6 +10535,98 @@ mod tests {
         let health = database_health(&conn).expect("health reads");
         assert_eq!(health.seq_gap_sessions, vec![2]);
         assert!(!health.healthy());
+    }
+
+    fn create_deletion_audit_table(conn: &Connection) {
+        conn.execute_batch(
+            "CREATE TABLE deletion_audit (
+                 id INTEGER PRIMARY KEY,
+                 kind TEXT NOT NULL,
+                 performed_at INTEGER NOT NULL,
+                 session_id INTEGER NOT NULL,
+                 rows_deleted INTEGER NOT NULL,
+                 seq_min INTEGER NOT NULL,
+                 seq_max INTEGER NOT NULL,
+                 cutoff_ms INTEGER
+             );",
+        )
+        .expect("deletion_audit fixture table");
+    }
+
+    #[test]
+    fn database_health_classifies_audited_gaps_as_explained() {
+        let conn = health_fixture_db();
+        create_deletion_audit_table(&conn);
+        conn.execute_batch(
+            "INSERT INTO events (session_id, seq, ts, kind) VALUES
+                 (2, 1, 4000, 'focus_changed'),
+                 (2, 5, 5000, 'focus_changed');
+             INSERT INTO deletion_audit
+                 (kind, performed_at, session_id, rows_deleted, seq_min, seq_max, cutoff_ms)
+             VALUES ('mouse_move_retention', 9000, 2, 3, 2, 4, 3500);",
+        )
+        .expect("explained gap rows");
+
+        let health = database_health(&conn).expect("health reads");
+        assert!(health.seq_gap_sessions.is_empty());
+        assert_eq!(health.explained_gap_sessions, vec![2]);
+        assert_eq!(health.deletion_audit_rows_deleted, Some(3));
+        assert!(health.healthy(), "explained deletions are not data loss");
+
+        // A hole reaching past the audited span is still possible data
+        // loss: partially explained keeps the session flagged.
+        conn.execute(
+            "UPDATE events SET seq = 7 WHERE session_id = 2 AND seq = 5",
+            [],
+        )
+        .expect("stretch the hole past the span");
+        let health = database_health(&conn).expect("health reads");
+        assert_eq!(health.seq_gap_sessions, vec![2]);
+        assert!(health.explained_gap_sessions.is_empty());
+        assert!(!health.healthy());
+    }
+
+    #[test]
+    fn database_health_never_explains_duplicate_seqs_by_deletion_audit() {
+        let conn = health_fixture_db();
+        create_deletion_audit_table(&conn);
+        // A cross-table duplicate of events seq 2 under a blanket audit
+        // span: deletions remove rows, they never mint two rows with one
+        // seq, so the session stays flagged.
+        conn.execute_batch(
+            "CREATE TABLE action_events (
+                 id INTEGER PRIMARY KEY,
+                 session_id INTEGER NOT NULL,
+                 seq INTEGER NOT NULL
+             );
+             INSERT INTO action_events (session_id, seq) VALUES (1, 2);
+             INSERT INTO deletion_audit
+                 (kind, performed_at, session_id, rows_deleted, seq_min, seq_max, cutoff_ms)
+             VALUES ('dashboard_prune', 9000, 1, 10, 0, 100, 3500);",
+        )
+        .expect("duplicate under blanket span");
+
+        let health = database_health(&conn).expect("health reads");
+        assert_eq!(health.seq_gap_sessions, vec![1]);
+        assert!(health.explained_gap_sessions.is_empty());
+        assert!(!health.healthy());
+    }
+
+    #[test]
+    fn database_health_reads_a_pre_audit_database_as_unexplained() {
+        let conn = health_fixture_db();
+        conn.execute(
+            "INSERT INTO events (session_id, seq, ts, kind) VALUES
+                 (2, 1, 4000, 'focus_changed'),
+                 (2, 3, 5000, 'focus_changed')",
+            [],
+        )
+        .expect("legacy gap rows");
+
+        let health = database_health(&conn).expect("health reads");
+        assert_eq!(health.deletion_audit_rows_deleted, None);
+        assert_eq!(health.seq_gap_sessions, vec![2]);
+        assert!(health.explained_gap_sessions.is_empty());
     }
 
     #[test]

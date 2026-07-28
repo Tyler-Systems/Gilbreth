@@ -10,7 +10,12 @@ from pathlib import Path
 import pytest
 
 from scripts.review_run import format_report, review_database, review_logs
-from scripts.tests.db_fixtures import create_db, insert_event, insert_session
+from scripts.tests.db_fixtures import (
+    create_db,
+    insert_deletion_audit,
+    insert_event,
+    insert_session,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -287,6 +292,172 @@ def test_review_run_uses_events_only_for_pre_record_routine_databases(
     review = review_database(path)
     assert review.healthy is False
     assert review.seq_gap_sessions == (1,)
+
+
+def test_review_run_classifies_audited_gaps_as_explained(tmp_path: Path) -> None:
+    """A seq hole fully covered by recorded deletions (migration 008) is a
+    known deletion, not data loss: the DB passes and the report says why."""
+    path = tmp_path / "explained-gap.db"
+    create_db(path)
+    conn = sqlite3.connect(path)
+    try:
+        insert_session(conn, 1, started_at=1_000, ended_at=10_000)
+        insert_event(conn, 1, session_id=1, seq=1, ts=2_000)
+        insert_event(conn, 2, session_id=1, seq=5, ts=6_000)
+        insert_deletion_audit(
+            conn,
+            kind="mouse_move_retention",
+            performed_at=20_000,
+            session_id=1,
+            rows_deleted=3,
+            seq_min=2,
+            seq_max=4,
+            cutoff_ms=15_000,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    review = review_database(path)
+    report = format_report(review, logs=None)
+
+    assert review.healthy is True
+    assert review.seq_gap_sessions == ()
+    assert review.explained_gap_sessions == (1,)
+    assert review.deletion_audit_rows_deleted == 3
+    assert "Status: PASS" in report
+    assert (
+        "Seq continuity: ok (gaps in sessions 1 explained by recorded deletions)"
+        in report
+    )
+    assert "Recorded deletions: 3 rows" in report
+
+
+def test_review_run_keeps_unaudited_and_partially_audited_gaps_in_review(
+    tmp_path: Path,
+) -> None:
+    """One session's hole is audited, the other session's is not — and a
+    hole reaching past the audited span stays REVIEW too."""
+    path = tmp_path / "mixed-gaps.db"
+    create_db(path)
+    conn = sqlite3.connect(path)
+    try:
+        insert_session(conn, 1, started_at=1_000, ended_at=10_000)
+        insert_event(conn, 1, session_id=1, seq=1, ts=2_000)
+        insert_event(conn, 2, session_id=1, seq=5, ts=6_000)
+        insert_deletion_audit(
+            conn,
+            kind="event_delete",
+            performed_at=20_000,
+            session_id=1,
+            rows_deleted=3,
+            seq_min=2,
+            seq_max=4,
+        )
+        insert_session(conn, 2, started_at=1_000, ended_at=10_000)
+        insert_event(conn, 3, session_id=2, seq=1, ts=2_000)
+        insert_event(conn, 4, session_id=2, seq=3, ts=3_000)
+        conn.commit()
+    finally:
+        conn.close()
+
+    review = review_database(path)
+    report = format_report(review, logs=None)
+
+    assert review.healthy is False
+    assert review.seq_gap_sessions == (2,)
+    assert review.explained_gap_sessions == (1,)
+    assert "Status: REVIEW" in report
+    assert "Reasons: sequence gaps in sessions 2" in report
+    assert (
+        "Seq continuity: gaps in sessions 2; "
+        "gaps in sessions 1 explained by recorded deletions" in report
+    )
+
+    conn = sqlite3.connect(path)
+    try:
+        # Session 1's hole now reaches seq 6, past the audited [2, 4] span:
+        # partially explained is still possible data loss.
+        conn.execute("UPDATE events SET seq = 7 WHERE id = 2")
+        conn.commit()
+    finally:
+        conn.close()
+
+    review = review_database(path)
+    assert review.seq_gap_sessions == (1, 2)
+    assert review.explained_gap_sessions == ()
+
+
+def test_review_run_never_explains_duplicate_seqs_by_deletion_audit(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "duplicate-seq.db"
+    create_db(path)
+    conn = sqlite3.connect(path)
+    try:
+        insert_session(conn, 1, started_at=1_000, ended_at=10_000)
+        insert_event(conn, 1, session_id=1, seq=1, ts=2_000)
+        insert_event(conn, 2, session_id=1, seq=2, ts=3_000)
+        # A cross-table duplicate: an action_events row reusing seq 2 (the
+        # same shape the record-routine continuity test pins).
+        conn.execute("""
+            INSERT INTO record_sessions (
+                record_session_id, session_id, started_ts, ended_ts,
+                stop_reason, policy_snapshot_json, action_count
+            )
+            VALUES (1, 1, 2500, 5500, 'user_stop', '{}', 1)
+            """)
+        conn.execute("""
+            INSERT INTO action_events (
+                session_id, seq, ts, action_type, trust_basis,
+                record_session_id, payload
+            )
+            VALUES (1, 2, 3500, 'invoke', 'pid_match', 1, '{}')
+            """)
+        # Even a blanket audit span cannot explain a duplicate: deletions
+        # remove rows, they never mint two rows with one seq.
+        insert_deletion_audit(
+            conn,
+            kind="dashboard_prune",
+            performed_at=20_000,
+            session_id=1,
+            rows_deleted=10,
+            seq_min=0,
+            seq_max=100,
+            cutoff_ms=15_000,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    review = review_database(path)
+    assert review.healthy is False
+    assert review.seq_gap_sessions == (1,)
+    assert review.explained_gap_sessions == ()
+
+
+def test_review_run_treats_a_pre_audit_database_as_unexplained(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "pre-audit.db"
+    create_db(path)
+    conn = sqlite3.connect(path)
+    try:
+        conn.execute("DROP TABLE deletion_audit")
+        insert_session(conn, 1, started_at=1_000, ended_at=10_000)
+        insert_event(conn, 1, session_id=1, seq=1, ts=2_000)
+        insert_event(conn, 2, session_id=1, seq=3, ts=3_000)
+        conn.commit()
+    finally:
+        conn.close()
+
+    review = review_database(path)
+    report = format_report(review, logs=None)
+
+    assert review.deletion_audit_rows_deleted is None
+    assert review.seq_gap_sessions == (1,)
+    assert review.explained_gap_sessions == ()
+    assert "Recorded deletions:" not in report
 
 
 def test_review_run_explains_an_orphan_pause_without_marking_it_unhealthy(

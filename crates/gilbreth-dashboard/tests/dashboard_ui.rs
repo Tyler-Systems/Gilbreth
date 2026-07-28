@@ -1195,6 +1195,8 @@ fn diagnostics_snapshot_rich() -> DiagnosticsSnapshot {
             foreign_key_issues: 0,
             user_version: 9,
             seq_gap_sessions: Vec::new(),
+            explained_gap_sessions: Vec::new(),
+            deletion_audit_rows_deleted: Some(0),
             capture_events_dropped: 0,
             stale_pre_erase_rows_dropped: 0,
             recovered_focus_rows: 0,

@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     env, fs,
     io::{Seek, SeekFrom, Write},
     path::{Path, PathBuf},
@@ -43,6 +43,7 @@ const RECORD_ROUTINE_SQL: &str = include_str!("../../../schema/005_record_routin
 const ACTION_FRAMEWORK_CLASS_SQL: &str =
     include_str!("../../../schema/006_action_framework_class.sql");
 const OPEN_FOCUS_SQL: &str = include_str!("../../../schema/007_open_focus.sql");
+const DELETION_AUDIT_SQL: &str = include_str!("../../../schema/008_deletion_audit.sql");
 /// Shared by the writer's batched insert and open-focus crash repair so a
 /// synthesized row can never drift from the live column mapping.
 const INSERT_EVENT_SQL: &str = "INSERT INTO events (
@@ -839,6 +840,7 @@ impl GilbrethStore {
         tx.execute("DELETE FROM record_requests", [])?;
         tx.execute("DELETE FROM selector_paths", [])?;
         tx.execute("DELETE FROM open_focus", [])?;
+        tx.execute("DELETE FROM deletion_audit", [])?;
         tx.execute("DELETE FROM events", [])?;
         tx.execute("DELETE FROM sessions", [])?;
         tx.execute("DELETE FROM meta", [])?;
@@ -849,6 +851,7 @@ impl GilbrethStore {
                 'record_sessions',
                 'record_requests',
                 'selector_paths',
+                'deletion_audit',
                 'events',
                 'sessions',
                 'meta'
@@ -880,9 +883,21 @@ impl GilbrethStore {
         self.conn.execute_batch("PRAGMA secure_delete = ON;")?;
 
         let prune_result = (|| {
+            let performed_at = unix_now_ms();
             let tx = self.conn.transaction()?;
-            tx.execute("DELETE FROM action_events WHERE ts < ?1", [cutoff_ms])?;
-            let events_deleted = tx.execute("DELETE FROM events WHERE ts < ?1", [cutoff_ms])?;
+            let mut audit = DeletionAuditAggregate::default();
+            delete_returning_audit(
+                &tx,
+                "DELETE FROM action_events WHERE ts < ?1 RETURNING session_id, seq",
+                [cutoff_ms],
+                &mut audit,
+            )?;
+            let events_deleted = delete_returning_audit(
+                &tx,
+                "DELETE FROM events WHERE ts < ?1 RETURNING session_id, seq",
+                [cutoff_ms],
+                &mut audit,
+            )?;
             tx.execute(
                 "
                 DELETE FROM record_sessions
@@ -896,7 +911,10 @@ impl GilbrethStore {
                 ",
                 [cutoff_ms],
             )?;
-            tx.execute(
+            // Orphan sweep deletes regardless of ts, so it must feed the
+            // audit too — a mirrored ts predicate would under-count it.
+            delete_returning_audit(
+                &tx,
                 "
                 DELETE FROM action_events
                 WHERE NOT EXISTS (
@@ -904,8 +922,10 @@ impl GilbrethStore {
                     FROM record_sessions
                     WHERE record_sessions.record_session_id = action_events.record_session_id
                 )
+                RETURNING session_id, seq
                 ",
                 [],
+                &mut audit,
             )?;
             let sessions_deleted = tx.execute(
                 "
@@ -955,6 +975,13 @@ impl GilbrethStore {
                 )
                 ",
                 [],
+            )?;
+            record_deletion_audit(
+                &tx,
+                DELETION_AUDIT_KIND_STARTUP_RETENTION,
+                performed_at,
+                Some(cutoff_ms),
+                &audit,
             )?;
             tx.commit()?;
 
@@ -1071,10 +1098,17 @@ impl GilbrethStore {
     /// no `is_sensitive` semantics). Other input rows are untouched.
     pub fn prune_mouse_moves_before(&mut self, cutoff_ms: i64) -> Result<u64, StoreError> {
         const PRUNE_BATCH: i64 = 20_000;
+        // One operation timestamp across every batch: a multi-batch prune
+        // still audits per batch transaction (a crash between batches keeps
+        // committed batches explained), but the shared performed_at groups
+        // the rows as one operation.
+        let performed_at = unix_now_ms();
         let mut total: u64 = 0;
         loop {
             let tx = self.conn.transaction()?;
-            let changed = tx.execute(
+            let mut audit = DeletionAuditAggregate::default();
+            let changed = delete_returning_audit(
+                &tx,
                 "
                 DELETE FROM events
                 WHERE id IN (
@@ -1082,8 +1116,17 @@ impl GilbrethStore {
                     WHERE kind = 'mouse_move' AND ts < ?1
                     LIMIT ?2
                 )
+                RETURNING session_id, seq
                 ",
                 params![cutoff_ms, PRUNE_BATCH],
+                &mut audit,
+            )?;
+            record_deletion_audit(
+                &tx,
+                DELETION_AUDIT_KIND_MOUSE_MOVE_RETENTION,
+                performed_at,
+                Some(cutoff_ms),
+                &audit,
             )?;
             tx.commit()?;
             total += changed as u64;
@@ -1633,15 +1676,29 @@ pub fn delete_events(
     }
 
     let mut conn = dashboard_writable_connection(db_path.as_ref())?;
+    let performed_at = unix_now_ms();
     let deleted = with_temporary_secure_delete(&mut conn, |conn| {
         let tx = conn.transaction()?;
+        let mut audit = DeletionAuditAggregate::default();
         let mut deleted = 0;
         {
-            let mut stmt = tx.prepare("DELETE FROM events WHERE id = ?1")?;
+            let mut stmt =
+                tx.prepare("DELETE FROM events WHERE id = ?1 RETURNING session_id, seq")?;
             for id in &ids {
-                deleted += stmt.execute([*id])?;
+                let mut rows = stmt.query([*id])?;
+                while let Some(row) = rows.next()? {
+                    audit.note(row.get(0)?, row.get(1)?);
+                    deleted += 1;
+                }
             }
         }
+        record_deletion_audit(
+            &tx,
+            DELETION_AUDIT_KIND_EVENT_DELETE,
+            performed_at,
+            None,
+            &audit,
+        )?;
         tx.commit()?;
         Ok(deleted)
     })?;
@@ -4287,6 +4344,101 @@ fn checkpoint_after_secure_delete(conn: &Connection) -> Option<String> {
     }
 }
 
+/// deletion_audit kinds — one per production deletion path. Secure erase is
+/// exempt: it deletes the audit table with everything else.
+const DELETION_AUDIT_KIND_STARTUP_RETENTION: &str = "startup_retention";
+const DELETION_AUDIT_KIND_MOUSE_MOVE_RETENTION: &str = "mouse_move_retention";
+const DELETION_AUDIT_KIND_DASHBOARD_PRUNE: &str = "dashboard_prune";
+const DELETION_AUDIT_KIND_EVENT_DELETE: &str = "event_delete";
+const DELETION_AUDIT_KIND_RECORDING_DELETE: &str = "recording_delete";
+
+/// Per-session aggregate of one deletion operation's seq-bearing rows,
+/// fed from `DELETE ... RETURNING session_id, seq` so the audit records
+/// exactly what each statement removed — no mirrored predicate to drift.
+/// BTreeMap keeps the audit rows in session order.
+#[derive(Debug, Default)]
+struct DeletionAuditAggregate {
+    per_session: BTreeMap<i64, DeletionAuditSpan>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DeletionAuditSpan {
+    rows_deleted: i64,
+    seq_min: i64,
+    seq_max: i64,
+}
+
+impl DeletionAuditAggregate {
+    fn note(&mut self, session_id: i64, seq: i64) {
+        self.per_session
+            .entry(session_id)
+            .and_modify(|span| {
+                span.rows_deleted += 1;
+                span.seq_min = span.seq_min.min(seq);
+                span.seq_max = span.seq_max.max(seq);
+            })
+            .or_insert(DeletionAuditSpan {
+                rows_deleted: 1,
+                seq_min: seq,
+                seq_max: seq,
+            });
+    }
+}
+
+/// Run a `DELETE ... RETURNING session_id, seq` statement, folding every
+/// deleted row into the aggregate. Returns the deleted-row count.
+fn delete_returning_audit<P: rusqlite::Params>(
+    conn: &Connection,
+    sql: &str,
+    params: P,
+    aggregate: &mut DeletionAuditAggregate,
+) -> Result<usize, StoreError> {
+    let mut stmt = conn.prepare(sql)?;
+    let mut rows = stmt.query(params)?;
+    let mut deleted = 0;
+    while let Some(row) = rows.next()? {
+        aggregate.note(row.get(0)?, row.get(1)?);
+        deleted += 1;
+    }
+    Ok(deleted)
+}
+
+/// Write the operation's audit rows in the same transaction as its deletes:
+/// one row per affected session, counts and seq span only (value-free; see
+/// migration 008). A database without the table yet — a dashboard opened
+/// against a store the app has not migrated past 007 — skips the audit and
+/// keeps today's unaudited delete rather than failing it.
+fn record_deletion_audit(
+    conn: &Connection,
+    kind: &str,
+    performed_at: i64,
+    cutoff_ms: Option<i64>,
+    aggregate: &DeletionAuditAggregate,
+) -> Result<(), StoreError> {
+    if aggregate.per_session.is_empty() || !sqlite_table_exists(conn, "deletion_audit")? {
+        return Ok(());
+    }
+    let mut stmt = conn.prepare(
+        "
+        INSERT INTO deletion_audit
+            (kind, performed_at, session_id, rows_deleted, seq_min, seq_max, cutoff_ms)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        ",
+    )?;
+    for (session_id, span) in &aggregate.per_session {
+        stmt.execute(params![
+            kind,
+            performed_at,
+            session_id,
+            span.rows_deleted,
+            span.seq_min,
+            span.seq_max,
+            cutoff_ms
+        ])?;
+    }
+    Ok(())
+}
+
 fn delete_recording_rows(conn: &Connection, record_session_id: i64) -> Result<usize, StoreError> {
     let row = match conn.query_row(
         "
@@ -4308,9 +4460,20 @@ fn delete_recording_rows(conn: &Connection, record_session_id: i64) -> Result<us
         ));
     }
 
-    conn.execute(
-        "DELETE FROM action_events WHERE record_session_id = ?1",
+    let performed_at = unix_now_ms();
+    let mut audit = DeletionAuditAggregate::default();
+    delete_returning_audit(
+        conn,
+        "DELETE FROM action_events WHERE record_session_id = ?1 RETURNING session_id, seq",
         [record_session_id],
+        &mut audit,
+    )?;
+    record_deletion_audit(
+        conn,
+        DELETION_AUDIT_KIND_RECORDING_DELETE,
+        performed_at,
+        None,
+        &audit,
     )?;
     let deleted = conn.execute(
         "DELETE FROM record_sessions WHERE record_session_id = ?1",
@@ -4340,17 +4503,28 @@ fn prune_old_event_rows(
     cutoff_ms: i64,
 ) -> Result<DashboardPruneResult, StoreError> {
     let has_record_routine = record_routine_tables_present_conn(conn)?;
+    let performed_at = unix_now_ms();
+    let mut audit = DeletionAuditAggregate::default();
     let mut action_events_deleted = 0;
     let mut record_sessions_deleted = 0;
     let mut record_requests_deleted = 0;
     let mut selector_paths_deleted = 0;
 
     if has_record_routine {
-        action_events_deleted +=
-            conn.execute("DELETE FROM action_events WHERE ts < ?1", [cutoff_ms])?;
+        action_events_deleted += delete_returning_audit(
+            conn,
+            "DELETE FROM action_events WHERE ts < ?1 RETURNING session_id, seq",
+            [cutoff_ms],
+            &mut audit,
+        )?;
     }
 
-    let events_deleted = conn.execute("DELETE FROM events WHERE ts < ?1", [cutoff_ms])?;
+    let events_deleted = delete_returning_audit(
+        conn,
+        "DELETE FROM events WHERE ts < ?1 RETURNING session_id, seq",
+        [cutoff_ms],
+        &mut audit,
+    )?;
 
     if has_record_routine {
         record_sessions_deleted = conn.execute(
@@ -4367,7 +4541,9 @@ fn prune_old_event_rows(
             ",
             [cutoff_ms],
         )?;
-        action_events_deleted += conn.execute(
+        // Orphan sweep deletes regardless of ts — it must feed the audit.
+        action_events_deleted += delete_returning_audit(
+            conn,
             "
             DELETE FROM action_events
             WHERE NOT EXISTS (
@@ -4376,8 +4552,10 @@ fn prune_old_event_rows(
                 WHERE record_sessions.record_session_id =
                       action_events.record_session_id
             )
+            RETURNING session_id, seq
             ",
             [],
+            &mut audit,
         )?;
     }
 
@@ -4439,6 +4617,14 @@ fn prune_old_event_rows(
         selector_paths_deleted = sweep_orphan_selector_paths(conn)?;
     }
 
+    record_deletion_audit(
+        conn,
+        DELETION_AUDIT_KIND_DASHBOARD_PRUNE,
+        performed_at,
+        Some(cutoff_ms),
+        &audit,
+    )?;
+
     Ok(DashboardPruneResult {
         events_deleted,
         sessions_deleted,
@@ -4496,6 +4682,7 @@ fn migrations() -> Migrations<'static> {
         M::up(RECORD_ROUTINE_SQL),
         M::up(ACTION_FRAMEWORK_CLASS_SQL),
         M::up(OPEN_FOCUS_SQL),
+        M::up(DELETION_AUDIT_SQL),
     ])
 }
 
@@ -9032,6 +9219,285 @@ mod tests {
         assert_eq!(remaining, vec![2]);
     }
 
+    #[derive(Debug, PartialEq, Eq)]
+    struct AuditRow {
+        kind: String,
+        session_id: i64,
+        rows_deleted: i64,
+        seq_min: i64,
+        seq_max: i64,
+        cutoff_ms: Option<i64>,
+    }
+
+    fn deletion_audit_rows(conn: &Connection) -> Vec<AuditRow> {
+        conn.prepare(
+            "
+            SELECT kind, session_id, rows_deleted, seq_min, seq_max, cutoff_ms
+            FROM deletion_audit
+            ORDER BY id
+            ",
+        )
+        .expect("prepare audit rows")
+        .query_map([], |row| {
+            Ok(AuditRow {
+                kind: row.get(0)?,
+                session_id: row.get(1)?,
+                rows_deleted: row.get(2)?,
+                seq_min: row.get(3)?,
+                seq_max: row.get(4)?,
+                cutoff_ms: row.get(5)?,
+            })
+        })
+        .expect("query audit rows")
+        .collect::<Result<_, _>>()
+        .expect("audit rows")
+    }
+
+    #[test]
+    fn dashboard_delete_events_audits_count_and_seq_span_per_session() {
+        let (_dir, store) = temp_store();
+        let first = store.create_session(1_000, "test").expect("first session");
+        let second = store.create_session(2_000, "test").expect("second session");
+        insert_minimal_event(store.connection(), first, 0, 1_100);
+        insert_minimal_event(store.connection(), first, 1, 1_200);
+        insert_minimal_event(store.connection(), first, 2, 1_300);
+        insert_minimal_event(store.connection(), second, 0, 2_100);
+        let ids: Vec<i64> = store
+            .connection()
+            .prepare("SELECT id FROM events ORDER BY session_id, seq")
+            .expect("prepare ids")
+            .query_map([], |row| row.get(0))
+            .expect("query ids")
+            .collect::<Result<_, _>>()
+            .expect("ids");
+
+        // Delete seqs 0 and 2 of the first session and the second session's
+        // only row; the unknown id must not audit anything.
+        let result = delete_events(store.db_path(), &[ids[0], ids[2], ids[3], 404_404])
+            .expect("events deleted");
+
+        assert_eq!(result.deleted, 3);
+        assert_eq!(
+            deletion_audit_rows(store.connection()),
+            vec![
+                AuditRow {
+                    kind: DELETION_AUDIT_KIND_EVENT_DELETE.to_string(),
+                    session_id: first,
+                    rows_deleted: 2,
+                    seq_min: 0,
+                    seq_max: 2,
+                    cutoff_ms: None,
+                },
+                AuditRow {
+                    kind: DELETION_AUDIT_KIND_EVENT_DELETE.to_string(),
+                    session_id: second,
+                    rows_deleted: 1,
+                    seq_min: 0,
+                    seq_max: 0,
+                    cutoff_ms: None,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn dashboard_prune_audits_deleted_rows_with_the_cutoff() {
+        let (_dir, store) = temp_store();
+        let first = store.create_session(1_000, "test").expect("first session");
+        let second = store.create_session(2_000, "test").expect("second session");
+        insert_minimal_event(store.connection(), first, 0, 1_100);
+        insert_minimal_event(store.connection(), first, 1, 1_200);
+        insert_minimal_event(store.connection(), second, 0, 1_500);
+        insert_minimal_event(store.connection(), second, 1, 9_000);
+
+        let result = prune_old_events(store.db_path(), 5_000).expect("pruned");
+
+        assert_eq!(result.events_deleted, 3);
+        assert_eq!(
+            deletion_audit_rows(store.connection()),
+            vec![
+                AuditRow {
+                    kind: DELETION_AUDIT_KIND_DASHBOARD_PRUNE.to_string(),
+                    session_id: first,
+                    rows_deleted: 2,
+                    seq_min: 0,
+                    seq_max: 1,
+                    cutoff_ms: Some(5_000),
+                },
+                AuditRow {
+                    kind: DELETION_AUDIT_KIND_DASHBOARD_PRUNE.to_string(),
+                    session_id: second,
+                    rows_deleted: 1,
+                    seq_min: 0,
+                    seq_max: 0,
+                    cutoff_ms: Some(5_000),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn dashboard_delete_recording_audits_its_action_event_rows() {
+        let (_dir, store) = temp_store();
+        let session_id = store.create_session(1_000, "test").expect("session");
+        insert_record_routine_rows(
+            store.connection(),
+            RecordRoutineFixture {
+                request_id: 10,
+                record_session_id: 20,
+                selector_id: 30,
+                session_id,
+                seq: 7,
+                action_ts: 1_500,
+                record_ended_ts: Some(2_000),
+                request_expires_at: 90_000,
+                selector_hash: "hash-a",
+            },
+        );
+
+        let result = delete_recording(store.db_path(), 20).expect("recording deleted");
+
+        assert_eq!(result.deleted, 1);
+        assert_eq!(
+            deletion_audit_rows(store.connection()),
+            vec![AuditRow {
+                kind: DELETION_AUDIT_KIND_RECORDING_DELETE.to_string(),
+                session_id,
+                rows_deleted: 1,
+                seq_min: 7,
+                seq_max: 7,
+                cutoff_ms: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn startup_retention_prune_audits_deleted_rows_with_the_cutoff() {
+        let (_dir, mut store) = temp_store();
+        let base = Instant::now();
+        let old_session = store.create_session(1_000, "test").expect("old session");
+        store.end_session(old_session, 4_000).expect("old ended");
+        let mut sequencer = Sequencer::new(old_session, SessionTimebase::new(base, 1_000));
+        let first = sequencer.stamp(captured_focus("Old one", base));
+        let second = sequencer.stamp(captured_focus("Old two", base + Duration::from_millis(10)));
+        store
+            .insert_events(&[first.clone(), second.clone()])
+            .expect("events inserted");
+
+        let report = store.prune_old_activity(5_000).expect("retention prune");
+
+        assert_eq!(report.events_deleted, 2);
+        assert_eq!(
+            deletion_audit_rows(store.connection()),
+            vec![AuditRow {
+                kind: DELETION_AUDIT_KIND_STARTUP_RETENTION.to_string(),
+                session_id: old_session,
+                rows_deleted: 2,
+                seq_min: u64_to_i64(first.seq),
+                seq_max: u64_to_i64(second.seq),
+                cutoff_ms: Some(5_000),
+            }]
+        );
+    }
+
+    #[test]
+    fn mouse_move_retention_audits_batches_as_one_operation() {
+        let (_dir, mut store) = temp_store();
+        let session_id = store.create_session(1_000, "test").expect("session");
+        // One row past the batch size forces a second batch. Bulk-insert
+        // inside one transaction so the fixture stays fast.
+        let total_rows: i64 = 20_001;
+        {
+            let conn = store.connection();
+            conn.execute_batch("BEGIN").expect("begin fixture tx");
+            let mut stmt = conn
+                .prepare(
+                    "
+                    INSERT INTO events (session_id, seq, ts, source, kind, payload)
+                    VALUES (?1, ?2, ?3, 'mouse', 'mouse_move', '{}')
+                    ",
+                )
+                .expect("prepare fixture insert");
+            for seq in 0..total_rows {
+                stmt.execute(params![session_id, seq, 1_000 + seq])
+                    .expect("fixture row inserted");
+            }
+            drop(stmt);
+            conn.execute_batch("COMMIT").expect("commit fixture tx");
+        }
+
+        let pruned = store
+            .prune_mouse_moves_before(1_000 + total_rows)
+            .expect("prune runs");
+
+        assert_eq!(pruned, total_rows as u64);
+        let audit = deletion_audit_rows(store.connection());
+        assert_eq!(audit.len(), 2, "one audit row per batch: {audit:?}");
+        assert!(audit
+            .iter()
+            .all(|row| row.kind == DELETION_AUDIT_KIND_MOUSE_MOVE_RETENTION
+                && row.session_id == session_id
+                && row.cutoff_ms == Some(1_000 + total_rows)));
+        assert_eq!(
+            audit.iter().map(|row| row.rows_deleted).sum::<i64>(),
+            total_rows
+        );
+        assert_eq!(audit.iter().map(|row| row.seq_min).min(), Some(0));
+        assert_eq!(
+            audit.iter().map(|row| row.seq_max).max(),
+            Some(total_rows - 1)
+        );
+        // Batches share one operation timestamp.
+        let distinct_performed_at: i64 = store
+            .connection()
+            .query_row(
+                "SELECT COUNT(DISTINCT performed_at) FROM deletion_audit",
+                [],
+                |row| row.get(0),
+            )
+            .expect("performed_at count");
+        assert_eq!(distinct_performed_at, 1);
+    }
+
+    #[test]
+    fn secure_erase_deletes_deletion_audit_rows() {
+        let (_dir, mut store) = temp_store();
+        store
+            .connection()
+            .execute(
+                "
+                INSERT INTO deletion_audit
+                    (kind, performed_at, session_id, rows_deleted, seq_min, seq_max, cutoff_ms)
+                VALUES ('event_delete', 1, 1, 1, 0, 0, NULL)
+                ",
+                [],
+            )
+            .expect("audit row inserted");
+
+        store.secure_delete_activity().expect("erase runs");
+
+        assert_eq!(row_count(store.connection(), "deletion_audit"), 0);
+    }
+
+    #[test]
+    fn dashboard_delete_still_works_without_the_deletion_audit_table() {
+        let (_dir, store) = temp_store();
+        let session_id = store.create_session(1_000, "test").expect("session");
+        insert_minimal_event(store.connection(), session_id, 0, 1_100);
+        store
+            .connection()
+            .execute("DROP TABLE deletion_audit", [])
+            .expect("simulate a pre-008 database");
+
+        let result = delete_events(store.db_path(), &[1]).expect("delete still works");
+
+        assert_eq!(result.deleted, 1);
+        assert!(
+            !sqlite_table_exists(store.connection(), "deletion_audit").expect("table probe"),
+            "the guard must skip the audit, not recreate the table"
+        );
+    }
+
     #[test]
     fn temporary_secure_delete_restores_original_setting_on_same_connection() {
         let (_dir, store) = temp_store();
@@ -11802,6 +12268,7 @@ mod tests {
             ("005_record_routine.sql", RECORD_ROUTINE_SQL),
             ("006_action_framework_class.sql", ACTION_FRAMEWORK_CLASS_SQL),
             ("007_open_focus.sql", OPEN_FOCUS_SQL),
+            ("008_deletion_audit.sql", DELETION_AUDIT_SQL),
         ];
 
         for (name, sql) in post_initial_migrations {
@@ -11908,6 +12375,11 @@ mod tests {
                 "007_open_focus.sql",
                 OPEN_FOCUS_SQL,
                 include_str!("../tests/fixtures/released_migrations/007_open_focus.sql"),
+            ),
+            (
+                "008_deletion_audit.sql",
+                DELETION_AUDIT_SQL,
+                include_str!("../tests/fixtures/released_migrations/008_deletion_audit.sql"),
             ),
         ];
 

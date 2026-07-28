@@ -19,6 +19,7 @@ def create_db(path: Path) -> None:
             "005_record_routine.sql",
             "006_action_framework_class.sql",
             "007_open_focus.sql",
+            "008_deletion_audit.sql",
         ):
             conn.executescript((SCHEMA_DIR / schema).read_text(encoding="utf-8"))
         conn.commit()
@@ -45,6 +46,28 @@ def insert_session(
         VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
         (session_id, started_at, ended_at, host, app_version, git_sha, run_label),
+    )
+
+
+def insert_deletion_audit(
+    conn: sqlite3.Connection,
+    *,
+    kind: str,
+    performed_at: int,
+    session_id: int,
+    rows_deleted: int,
+    seq_min: int,
+    seq_max: int,
+    cutoff_ms: int | None = None,
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO deletion_audit (
+            kind, performed_at, session_id, rows_deleted, seq_min, seq_max, cutoff_ms
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (kind, performed_at, session_id, rows_deleted, seq_min, seq_max, cutoff_ms),
     )
 
 

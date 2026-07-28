@@ -90,6 +90,17 @@ FROM events
 WHERE kind = 'focus_changed'
   AND json_extract(payload, '$.recovered') = 1
 """
+DELETION_AUDIT_SPANS_SQL = """
+SELECT session_id, seq_min, seq_max
+FROM deletion_audit
+"""
+DELETION_AUDIT_TOTAL_SQL = "SELECT COALESCE(SUM(rows_deleted), 0) FROM deletion_audit"
+SESSION_SEQS_SQL = """
+SELECT seq FROM events WHERE session_id = ?1
+UNION ALL
+SELECT seq FROM action_events WHERE session_id = ?1
+"""
+EVENTS_ONLY_SESSION_SEQS_SQL = "SELECT seq FROM events WHERE session_id = ?1"
 CAPTURE_EVENTS_DROPPED_META_KEY = "capture_events_dropped"
 STALE_PRE_ERASE_ROWS_DROPPED_META_KEY = "stale_pre_erase_rows_dropped"
 
@@ -144,7 +155,13 @@ class DatabaseReview:
     open_sessions: int
     events: int
     sensitive_rows: int
+    # Sessions whose seq holes are NOT covered by recorded deletions — the
+    # REVIEW-driving set. Explained sessions land in explained_gap_sessions.
     seq_gap_sessions: tuple[int, ...]
+    explained_gap_sessions: tuple[int, ...]
+    # Total rows_deleted recorded in deletion_audit; None when the table
+    # does not exist yet (pre-008 database or old archive).
+    deletion_audit_rows_deleted: int | None
     power_counts: dict[str, int]
     process_counts: dict[str, int]
     pause_counts: dict[str, int]
@@ -200,13 +217,38 @@ def review_database(db_path: Path) -> DatabaseReview:
                 "SELECT COUNT(*) FROM events WHERE is_sensitive != 0"
             ).fetchone()[0]
         )
-        seq_gap_sql = (
-            SEQ_GAP_SQL
-            if _table_exists(conn, "action_events")
-            else EVENTS_ONLY_SEQ_GAP_SQL
-        )
+        has_action_events = _table_exists(conn, "action_events")
+        seq_gap_sql = SEQ_GAP_SQL if has_action_events else EVENTS_ONLY_SEQ_GAP_SQL
         seq_gap_rows = conn.execute(seq_gap_sql).fetchall()
-        seq_gap_sessions = tuple(int(row[0]) for row in seq_gap_rows)
+        flagged_gap_sessions = tuple(int(row[0]) for row in seq_gap_rows)
+        if _table_exists(conn, "deletion_audit"):
+            deletion_audit_rows_deleted = int(
+                conn.execute(DELETION_AUDIT_TOTAL_SQL).fetchone()[0]
+            )
+            audit_spans: dict[int, list[tuple[int, int]]] = {}
+            for span_session, seq_min, seq_max in conn.execute(
+                DELETION_AUDIT_SPANS_SQL
+            ).fetchall():
+                audit_spans.setdefault(int(span_session), []).append(
+                    (int(seq_min), int(seq_max))
+                )
+        else:
+            deletion_audit_rows_deleted = None
+            audit_spans = {}
+        unexplained: list[int] = []
+        explained: list[int] = []
+        for flagged_session in flagged_gap_sessions:
+            if _session_gap_is_explained(
+                conn,
+                flagged_session,
+                has_action_events,
+                audit_spans.get(flagged_session, []),
+            ):
+                explained.append(flagged_session)
+            else:
+                unexplained.append(flagged_session)
+        seq_gap_sessions = tuple(unexplained)
+        explained_gap_sessions = tuple(explained)
         power_rows = conn.execute(POWER_COUNTS_SQL).fetchall()
         power_counts = {str(kind): int(count) for kind, count in power_rows}
         process_rows = conn.execute(PROCESS_COUNTS_SQL).fetchall()
@@ -245,6 +287,8 @@ def review_database(db_path: Path) -> DatabaseReview:
         events=events,
         sensitive_rows=sensitive_rows,
         seq_gap_sessions=seq_gap_sessions,
+        explained_gap_sessions=explained_gap_sessions,
+        deletion_audit_rows_deleted=deletion_audit_rows_deleted,
         power_counts=power_counts,
         process_counts=process_counts,
         pause_counts=pause_counts,
@@ -325,6 +369,47 @@ def review_logs(
     )
 
 
+def _merged_audit_spans(spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    merged: list[tuple[int, int]] = []
+    for start, end in sorted(spans):
+        if merged and start <= merged[-1][1] + 1:
+            last_start, last_end = merged[-1]
+            merged[-1] = (last_start, max(last_end, end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def _session_gap_is_explained(
+    conn: sqlite3.Connection,
+    session_id: int,
+    has_action_events: bool,
+    spans: list[tuple[int, int]],
+) -> bool:
+    """True when every missing seq in the session's shared span falls inside
+    a recorded-deletion span (migration 008). Duplicate seqs are never a
+    recorded deletion, and a missing run outside the audited spans still
+    reads as possible data loss — both keep the session in REVIEW."""
+    if not spans:
+        return False
+    if has_action_events:
+        rows = conn.execute(SESSION_SEQS_SQL, (session_id,)).fetchall()
+    else:
+        rows = conn.execute(EVENTS_ONLY_SESSION_SEQS_SQL, (session_id,)).fetchall()
+    seqs = sorted(int(row[0]) for row in rows)
+    merged = _merged_audit_spans(spans)
+    previous: int | None = None
+    for seq in seqs:
+        if seq == previous:
+            return False
+        if previous is not None and seq > previous + 1:
+            run_start, run_end = previous + 1, seq - 1
+            if not any(start <= run_start and run_end <= end for start, end in merged):
+                return False
+        previous = seq
+    return True
+
+
 def review_reasons(review: DatabaseReview, logs: LogSummary | None) -> list[str]:
     """The named reasons behind a REVIEW verdict — the same layered
     categories the dashboard Diagnostics tab shows (DASH-04), so the two
@@ -364,12 +449,21 @@ def format_report(review: DatabaseReview, logs: LogSummary | None) -> str:
     capture_paused = review.pause_counts.get("capture_paused", 0)
     capture_resumed = review.pause_counts.get("capture_resumed", 0)
     open_pauses = max(0, capture_paused - capture_resumed)
-    seq_status = (
-        "ok"
-        if not review.seq_gap_sessions
-        else "gaps in sessions "
-        + ", ".join(str(value) for value in review.seq_gap_sessions)
+    explained_note = (
+        "gaps in sessions "
+        + ", ".join(str(value) for value in review.explained_gap_sessions)
+        + " explained by recorded deletions"
     )
+    if review.seq_gap_sessions:
+        seq_status = "gaps in sessions " + ", ".join(
+            str(value) for value in review.seq_gap_sessions
+        )
+        if review.explained_gap_sessions:
+            seq_status += f"; {explained_note}"
+    elif review.explained_gap_sessions:
+        seq_status = f"ok ({explained_note})"
+    else:
+        seq_status = "ok"
     reasons = review_reasons(review, logs)
     status = "PASS" if not reasons else "REVIEW"
     lines = [
@@ -396,6 +490,10 @@ def format_report(review: DatabaseReview, logs: LogSummary | None) -> str:
             f"paused={capture_paused}, resumed={capture_resumed}, open={open_pauses}"
         ),
         f"Recovered focus rows: {review.recovered_focus_rows}",
+    ]
+    if review.deletion_audit_rows_deleted is not None:
+        lines.append(f"Recorded deletions: {review.deletion_audit_rows_deleted} rows")
+    lines += [
         f"Clipboard rows: total={review.clipboard_rows}, unavailable={review.clipboard_unavailable_rows}",
         (
             "Capture drops before write: unparseable"

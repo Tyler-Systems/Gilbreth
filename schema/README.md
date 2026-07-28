@@ -1,6 +1,6 @@
 # Gilbreth Schema Contract
 
-Current live schema version: 7 (`007_open_focus.sql`).
+Current live schema version: 8 (`008_deletion_audit.sql`).
 
 The SQLite schema is the local contract between the recorder and the native
 dashboard. `gilbreth-store` owns migrations and writes, `gilbreth-read`
@@ -36,6 +36,19 @@ ungracefully, and startup/archive repair converts it into one synthesized
 Readers treat the row as live only while its high-water mark is within two
 beats of the read, and consume it for Today/Week active time and top apps
 only. Privacy deletion covers the table explicitly; it carries no titles.
+
+Migration `008` adds `deletion_audit`: value-free accounting for every
+seq-bearing row Gilbreth deletes outside secure erase — dashboard prune,
+recording delete, per-event delete, startup retention, and mouse-move
+retention each write one row per affected session per operation, carrying
+kind, operation timestamp, session, deleted-row count, and the deleted seq
+span (plus the cutoff for prune kinds). No content and no event timestamps
+are preserved. The seq-continuity health check (review_run.py and
+`gilbreth-read`) uses the spans to classify a gap as a recorded deletion
+rather than data loss; a gap not covered by audited spans still reads as
+REVIEW. Audit rows deliberately outlive their sessions and carry no FK;
+secure erase deletes the table with everything else, and archives carry
+their audit rows along.
 
 Record Routine tables (`record_requests`, `record_sessions`, `selector_paths`,
 and `action_events`) are active for the dashboard/tray/writer lifecycle,
