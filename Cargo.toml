@@ -82,6 +82,9 @@ objc2-foundation = { version = "0.3", features = [
 # generator and org as the rest of the family (madsmtm/objc2) — vendor
 # lineage unchanged, the application-services precedent.
 objc2-service-management = { version = "0.3", features = ["SMAppService"] }
+# DASH-06 first-launch fit: the version eframe 0.35 already carries — no
+# new vendor lineage, the dashboard only names the trait eframe implements.
+raw-window-handle = "0.6"
 rusqlite = { version = "0.40", features = ["bundled"] }
 rusqlite_migration = "2"
 regex = "1"

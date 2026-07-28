@@ -1798,11 +1798,13 @@ dependencies = [
  "gilbreth-core",
  "gilbreth-read",
  "gilbreth-store",
+ "raw-window-handle",
  "rusqlite",
  "serde",
  "serde_json",
  "tempfile",
  "tracing",
+ "windows",
 ]
 
 [[package]]

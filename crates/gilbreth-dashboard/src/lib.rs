@@ -11,6 +11,7 @@ pub mod charts;
 #[cfg(test)]
 mod copy_audit;
 pub mod data;
+mod first_launch;
 pub mod fonts;
 pub mod format;
 pub mod shell;
@@ -1245,6 +1246,13 @@ pub fn run_dashboard(host: DashboardHost) -> eframe::Result {
         "gilbreth-dashboard",
         options,
         Box::new(move |cc| {
+            // DASH-06: on a genuine first launch (no persisted geometry for
+            // eframe to restore) fit the default window into the target
+            // monitor's work area before the first frame paints. Persisted
+            // geometry stays authoritative on later launches.
+            if !first_launch::window_geometry_is_persisted(cc.storage) {
+                first_launch::fit_first_launch_window(cc);
+            }
             let restored_tab = restore_active_tab(ui_state_persistence, cc.storage);
             Ok(Box::new(DashboardApp::new(
                 host,
