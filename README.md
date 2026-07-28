@@ -292,7 +292,7 @@ Ground rules:
 
 ## PEOPLE
 
-- **Tyler Arnold** ([@tylersystems](https://github.com/tylersystems)) — Anchorage, Alaska, USA • GMT-9
+- **Tyler Arnold** ([@tylersystems](https://github.com/tylersystems))
 - **xozi** — **Rust capture prototype** (`main-rust`): Windows Raw Input capture, foreground/window tracking, system info; the reference implementation the v2 capture layer is salvaged from.
 - **Past contributors & interns** — thank you to everyone who shaped Gilbreth through its many iterations.
 
@@ -305,7 +305,3 @@ Copyright © 2024-2026 Tyler Systems LLC. Gilbreth's own source is licensed unde
 Bundled third-party components keep their own licenses and are not relicensed by the above. Gilbreth bundles two font families, Inter and IBM Plex Mono, both under the SIL Open Font License 1.1, whose terms require them to travel under that license in every copy; each ships with its license text beside it in `crates/gilbreth-dashboard/assets/fonts/`. Every other dependency is listed in [THIRD-PARTY-NOTICES.md](docs/THIRD-PARTY-NOTICES.md).
 
 In plain terms: you may use, study, modify, and redistribute Gilbreth freely; if you distribute it (or offer a modified version over a network), your version must stay open under the same terms. For a tool that records keystrokes, that is the point: every fork stays publicly auditable. If the AGPL doesn't fit your situation, commercial licenses are available from Tyler Systems LLC.
-
----
-
-**Gilbreth** — the careful study of work, one motion at a time.
