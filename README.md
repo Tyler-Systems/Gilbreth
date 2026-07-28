@@ -1,14 +1,39 @@
-# Gilbreth
+<p align="center">
+  <img src="docs/media/logo.png" width="130" alt="The Gilbreth G, drawn as a continuous light trail with timing dots">
+</p>
 
-**A privacy-respecting "time & motion" study for your computer: capture how you work, record the routines you'd like to automate, and discover patterns you've never seen.**
+<h1 align="center">Gilbreth</h1>
 
-**Download:**
+<p align="center"><strong>A privacy-respecting "time &amp; motion" study for your computer:<br>capture how you work, record the routines you'd like to automate, and discover patterns you've never seen.</strong></p>
 
-[![Download for Windows 11](https://img.shields.io/github/v/release/Tyler-Systems/Gilbreth?label=download%20for%20Windows%2011&labelColor=15171B&color=F2A33C)](https://github.com/Tyler-Systems/Gilbreth/releases/latest) ![Status](https://img.shields.io/badge/status-preview-yellow)
+<p align="center"><strong>Download:</strong></p>
 
-**Badges:**
+<p align="center">
+  <a href="https://github.com/Tyler-Systems/Gilbreth/releases/latest"><img src="https://img.shields.io/github/v/release/Tyler-Systems/Gilbreth?label=download%20for%20Windows%2011&labelColor=15171B&color=F2A33C&style=for-the-badge" alt="Download for Windows 11"></a>
+  <img src="https://img.shields.io/badge/status-preview-yellow?style=for-the-badge&labelColor=15171B" alt="Status: preview">
+</p>
 
-![App](https://img.shields.io/badge/app-Rust-informational) ![Dashboard](https://img.shields.io/badge/dashboard-Rust%20%2F%20egui-informational) ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-blue) ![Data](https://img.shields.io/badge/data-local%20only-brightgreen) ![License](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue)
+<p align="center"><sub>The release page carries the installer, manifest, and checksums; <a href="docs/VERIFY.md">docs/VERIFY.md</a> shows how to check all three.</sub></p>
+
+<p align="center"><strong>Badges:</strong></p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/app-Rust-informational" alt="App: Rust">
+  <img src="https://img.shields.io/badge/dashboard-Rust%20%2F%20egui-informational" alt="Dashboard: Rust / egui">
+  <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS-blue" alt="Platform: Windows and macOS">
+  <img src="https://img.shields.io/badge/data-local%20only-brightgreen" alt="Data: local only">
+  <img src="https://img.shields.io/badge/license-AGPL--3.0--or--later-blue" alt="License: AGPL-3.0-or-later">
+</p>
+
+<p align="center">
+  <a href="https://gilbreth.tylersystems.com/">Website</a> •
+  <a href="https://github.com/Tyler-Systems/Gilbreth/releases/latest">Latest release</a> •
+  <a href="docs/VERIFY.md">Verify a download</a> •
+  <a href="docs/ARCHITECTURE.md">Architecture</a> •
+  <a href="CONTRIBUTING.md">Contributing</a>
+</p>
+
+---
 
 A century ago, Frank and Lillian Gilbreth filmed people at work, found the
 wasted motions, and made the work less tiring. Gilbreth does that for computer
