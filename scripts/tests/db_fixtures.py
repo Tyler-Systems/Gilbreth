@@ -18,6 +18,7 @@ def create_db(path: Path) -> None:
             "004_drop_redundant_session_index.sql",
             "005_record_routine.sql",
             "006_action_framework_class.sql",
+            "007_open_focus.sql",
         ):
             conn.executescript((SCHEMA_DIR / schema).read_text(encoding="utf-8"))
         conn.commit()

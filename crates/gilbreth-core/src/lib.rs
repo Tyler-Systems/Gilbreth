@@ -131,6 +131,14 @@ pub trait EventSource: Send {
 
 pub const DEFAULT_IDLE_THRESHOLD_MS: u64 = 3 * 60 * 1000;
 
+/// Cadence of the writer's `open_focus` heartbeat (the foreground-heartbeat
+/// design, 2026-07-12 owner decision 4): a crash loses at most one beat of
+/// open-segment dwell, and readers treat a row as live only while its
+/// high-water mark is within two beats of the read. Shared here because the
+/// writer (gilbreth-store) beats on it and the readers (gilbreth-read) apply
+/// the freshness rule against it.
+pub const OPEN_FOCUS_BEAT_MS: i64 = 30_000;
+
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum CaptureStream {
     Foreground,
@@ -1389,6 +1397,13 @@ pub enum EventPayload {
         prev: Option<WindowRef>,
         previous_focused_for_ms: u64,
         window_unfocused_for_ms: u64,
+        /// True only on a row synthesized by startup or archive repair from
+        /// an orphaned `open_focus` heartbeat row: the dwell is reconstructed
+        /// after a crash, not observed at a live focus switch. Additive so
+        /// stored rows deserialize unchanged, absent unless set so ordinary
+        /// rows serialize byte-identically.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        recovered: bool,
     },
     WindowOpened {
         window: WindowRef,
@@ -2359,6 +2374,7 @@ impl Policy {
                 prev,
                 previous_focused_for_ms,
                 window_unfocused_for_ms,
+                ..
             } => {
                 let current_is_excluded = self.excludes_exe(&window.exe);
                 *self.current_focus_excluded.borrow_mut() = Some(current_is_excluded);
@@ -2552,6 +2568,7 @@ fn focus_changed(
             prev,
             previous_focused_for_ms,
             window_unfocused_for_ms,
+            recovered: false,
         },
     )
 }
@@ -2805,6 +2822,7 @@ mod tests {
             prev: None,
             previous_focused_for_ms: 0,
             window_unfocused_for_ms: 0,
+            recovered: false,
         }
     }
 
@@ -2893,6 +2911,7 @@ mod tests {
             prev: Some(allowed.clone()),
             previous_focused_for_ms: 11,
             window_unfocused_for_ms: 12,
+            recovered: false,
         });
         assert!(policy.apply(focus_in).is_none());
         assert!(policy
@@ -2907,6 +2926,7 @@ mod tests {
                 prev: Some(excluded.clone()),
                 previous_focused_for_ms: 9_999,
                 window_unfocused_for_ms: 8_888,
+                recovered: false,
             }))
             .expect("allowed outbound focus kept");
         let EventPayload::FocusChanged {
@@ -3036,6 +3056,7 @@ mod tests {
                 prev: Some(allowed.clone()),
                 previous_focused_for_ms: 1,
                 window_unfocused_for_ms: 2,
+                recovered: false,
             }))
             .is_none());
 
@@ -3125,6 +3146,7 @@ mod tests {
                 prev: Some(excluded),
                 previous_focused_for_ms: 3,
                 window_unfocused_for_ms: 4,
+                recovered: false,
             }))
             .is_some());
         assert!(policy
@@ -3221,6 +3243,7 @@ mod tests {
                 prev: None,
                 previous_focused_for_ms: 0,
                 window_unfocused_for_ms: 0,
+                recovered: false,
             }))
             .is_some());
         // While the stream runs, the latch attributes window-less input to
@@ -3247,6 +3270,7 @@ mod tests {
                 prev: None,
                 previous_focused_for_ms: 0,
                 window_unfocused_for_ms: 0,
+                recovered: false,
             }))
             .is_some());
         assert!(policy.apply(envelope(unattributed_key())).is_some());
@@ -3260,6 +3284,7 @@ mod tests {
                 prev: None,
                 previous_focused_for_ms: 0,
                 window_unfocused_for_ms: 0,
+                recovered: false,
             }))
             .is_none());
         policy.forget_focus_attribution();
@@ -4658,6 +4683,7 @@ mod tests {
                 prev,
                 previous_focused_for_ms,
                 window_unfocused_for_ms,
+                ..
             } => {
                 assert_eq!(window.title, "B");
                 assert_eq!(prev.as_ref().expect("previous window").title, "A");
@@ -4673,6 +4699,7 @@ mod tests {
                 prev,
                 previous_focused_for_ms,
                 window_unfocused_for_ms,
+                ..
             } => {
                 assert_eq!(window.title, "A");
                 assert_eq!(prev.as_ref().expect("previous window").title, "B");
@@ -4702,6 +4729,7 @@ mod tests {
                 prev,
                 previous_focused_for_ms,
                 window_unfocused_for_ms,
+                ..
             } => {
                 assert_eq!(window.title, "A");
                 assert_eq!(prev.as_ref().expect("previous window").title, "A");

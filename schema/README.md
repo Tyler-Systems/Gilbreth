@@ -1,6 +1,6 @@
 # Gilbreth Schema Contract
 
-Current live schema version: 6 (`006_action_framework_class.sql`).
+Current live schema version: 7 (`007_open_focus.sql`).
 
 The SQLite schema is the local contract between the recorder and the native
 dashboard. `gilbreth-store` owns migrations and writes, `gilbreth-read`
@@ -25,6 +25,17 @@ failing on `user_version`. A newer app may create tables an older dashboard does
 not know about; the dashboard should show less, not refuse to open the DB. An
 older archive may lack newer tables; new panels should render "not available"
 copy based on table/column probes.
+
+Migration `007` adds `open_focus`: a single-row operational table (enforced by
+`CHECK (id = 1)`) holding the writer's open foreground segment — session, exe
+basename, segment start, and a high-water timestamp the writer re-stamps every
+30 seconds while a segment is open. It is not an event log: a clean shutdown
+deletes the row, so a row present at open means the previous run ended
+ungracefully, and startup/archive repair converts it into one synthesized
+`focus_changed` row flagged `recovered` in the payload before deleting it.
+Readers treat the row as live only while its high-water mark is within two
+beats of the read, and consume it for Today/Week active time and top apps
+only. Privacy deletion covers the table explicitly; it carries no titles.
 
 Record Routine tables (`record_requests`, `record_sessions`, `selector_paths`,
 and `action_events`) are active for the dashboard/tray/writer lifecycle,

@@ -16,9 +16,10 @@ use gilbreth_core::{
     u64_to_i64, unix_now_ms, ActionCapture, ActionPayload, ActionType, AutomationAction, Captured,
     DiagnosticsCounters, DriftCorrection, EventEnvelope, EventPayload, FrameworkClass, Policy,
     RecordRequestStatus, RecordStopReason, SelectorPath, SelectorTrustBasis, Sequencer,
-    SessionTimebase, Source, StampedAction, StopToken, WriterInput, EXCLUDED_APP_GAP_PATTERN,
+    SessionTimebase, Source, StampedAction, StopToken, WindowRef, WriterInput,
+    EXCLUDED_APP_GAP_PATTERN, SCHEMA_VERSION,
 };
-use rusqlite::{params, Connection, ErrorCode, OpenFlags};
+use rusqlite::{params, Connection, ErrorCode, OpenFlags, OptionalExtension};
 use rusqlite_migration::{Migrations, M};
 use thiserror::Error;
 use tracing::{debug, error, info, warn};
@@ -41,6 +42,20 @@ const DROP_REDUNDANT_SESSION_INDEX_SQL: &str =
 const RECORD_ROUTINE_SQL: &str = include_str!("../../../schema/005_record_routine.sql");
 const ACTION_FRAMEWORK_CLASS_SQL: &str =
     include_str!("../../../schema/006_action_framework_class.sql");
+const OPEN_FOCUS_SQL: &str = include_str!("../../../schema/007_open_focus.sql");
+/// Shared by the writer's batched insert and open-focus crash repair so a
+/// synthesized row can never drift from the live column mapping.
+const INSERT_EVENT_SQL: &str = "INSERT INTO events (
+    session_id, seq, ts, source, kind, is_sensitive,
+    hwnd, exe, title, pid, prev_exe, prev_title,
+    key, mod_shift, mod_ctrl, mod_alt, mod_win,
+    button, pos_x, pos_y, duration_ms, payload
+) VALUES (
+    ?1, ?2, ?3, ?4, ?5, ?6,
+    ?7, ?8, ?9, ?10, ?11, ?12,
+    ?13, ?14, ?15, ?16, ?17,
+    ?18, ?19, ?20, ?21, ?22
+)";
 const DEFAULT_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10 * 60);
 const DEFAULT_BUSY_TIMEOUT: Duration = Duration::from_millis(5_000);
 const DAY_MS: i64 = 86_400_000;
@@ -180,6 +195,9 @@ impl GilbrethStore {
         apply_pragmas(&conn)?;
         migrate(&mut conn)?;
         ensure_meta_identity(&conn, unix_now_ms())?;
+        // Before the orphan stamp: the synthesized row's high-water
+        // timestamp becomes the crashed session's MAX(events.ts).
+        repair_open_focus(&conn)?;
         finalize_orphan_sessions(&conn)?;
         finalize_orphan_record_sessions(&conn)?;
         reconcile_confirmed_record_requests(&conn, unix_now_ms())?;
@@ -220,6 +238,33 @@ impl GilbrethStore {
             "UPDATE sessions SET ended_at = ?1 WHERE session_id = ?2",
             params![ended_at, session_id],
         )?;
+        Ok(())
+    }
+
+    /// Write or advance the single `open_focus` row (`CHECK (id = 1)` keeps
+    /// it single by construction). Only the writer's beat calls this.
+    fn upsert_open_focus(
+        &self,
+        session_id: i64,
+        exe: &str,
+        started_ts: i64,
+        high_water_ts: i64,
+    ) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT INTO open_focus (id, session_id, exe, started_ts, high_water_ts) \
+             VALUES (1, ?1, ?2, ?3, ?4) \
+             ON CONFLICT(id) DO UPDATE SET \
+                 session_id = excluded.session_id, \
+                 exe = excluded.exe, \
+                 started_ts = excluded.started_ts, \
+                 high_water_ts = excluded.high_water_ts",
+            params![session_id, exe, started_ts, high_water_ts],
+        )?;
+        Ok(())
+    }
+
+    fn delete_open_focus(&self) -> Result<(), StoreError> {
+        self.conn.execute("DELETE FROM open_focus", [])?;
         Ok(())
     }
 
@@ -516,19 +561,7 @@ impl GilbrethStore {
 
         let tx = self.conn.transaction()?;
         {
-            let mut stmt = tx.prepare_cached(
-                "INSERT INTO events (
-                    session_id, seq, ts, source, kind, is_sensitive,
-                    hwnd, exe, title, pid, prev_exe, prev_title,
-                    key, mod_shift, mod_ctrl, mod_alt, mod_win,
-                    button, pos_x, pos_y, duration_ms, payload
-                ) VALUES (
-                    ?1, ?2, ?3, ?4, ?5, ?6,
-                    ?7, ?8, ?9, ?10, ?11, ?12,
-                    ?13, ?14, ?15, ?16, ?17,
-                    ?18, ?19, ?20, ?21, ?22
-                )",
-            )?;
+            let mut stmt = tx.prepare_cached(INSERT_EVENT_SQL)?;
 
             for event in events {
                 let row = match EventRow::from_envelope(event) {
@@ -800,6 +833,8 @@ impl GilbrethStore {
         tx.execute("DELETE FROM record_sessions", [])?;
         tx.execute("DELETE FROM record_requests", [])?;
         tx.execute("DELETE FROM selector_paths", [])?;
+        // Before sessions: open_focus carries a sessions FK.
+        tx.execute("DELETE FROM open_focus", [])?;
         tx.execute("DELETE FROM events", [])?;
         tx.execute("DELETE FROM sessions", [])?;
         tx.execute("DELETE FROM meta", [])?;
@@ -1268,6 +1303,10 @@ pub struct WriterConfig {
     pub flush_interval: Duration,
     pub batch_size: usize,
     pub heartbeat_interval: Option<Duration>,
+    /// Cadence of the `open_focus` single-row beat (foreground-heartbeat
+    /// design, decision 4). Production keeps the shared 30 s default from
+    /// gilbreth-core; tests shorten it to drive beats deterministically.
+    pub open_focus_beat_interval: Duration,
     pub record_request_poll_interval: Option<Duration>,
     pub record_request_notify: Option<Sender<PendingRecordRequest>>,
     pub cap_prompt_notify: Option<Sender<CapPrompt>>,
@@ -1284,6 +1323,9 @@ impl Default for WriterConfig {
             flush_interval: Duration::from_millis(250),
             batch_size: 100,
             heartbeat_interval: Some(DEFAULT_HEARTBEAT_INTERVAL),
+            open_focus_beat_interval: Duration::from_millis(
+                gilbreth_core::OPEN_FOCUS_BEAT_MS as u64,
+            ),
             record_request_poll_interval: Some(Duration::from_secs(3)),
             record_request_notify: None,
             cap_prompt_notify: None,
@@ -2011,8 +2053,10 @@ pub fn run_writer_with_commands(
         .map(tick)
         .unwrap_or_else(never);
     let stop_ticker = tick(WRITER_STOP_POLL_INTERVAL);
+    let open_focus_ticker = tick(config.open_focus_beat_interval);
     let mut heartbeat = WriterHeartbeat::default();
     let mut record_state = WriterRecordState::default();
+    let mut open_focus = OpenFocusState::default();
     // Set only after a secure-erase replacement session is successfully
     // created. It remains active for that replacement session and is cleared
     // if archive/reset later creates a different replacement session.
@@ -2034,6 +2078,7 @@ pub fn run_writer_with_commands(
                             report: &mut report,
                             heartbeat: &mut heartbeat,
                             record_state: &mut record_state,
+                            open_focus: &mut open_focus,
                             stop: &stop,
                             diagnostics: &config.diagnostics,
                             panic_action_cutoff: &config.panic_action_cutoff,
@@ -2057,6 +2102,7 @@ pub fn run_writer_with_commands(
                             report: &mut report,
                             heartbeat: &mut heartbeat,
                             record_state: &mut record_state,
+                            open_focus: &mut open_focus,
                             stop: &stop,
                             diagnostics: &config.diagnostics,
                             panic_action_cutoff: &config.panic_action_cutoff,
@@ -2070,6 +2116,7 @@ pub fn run_writer_with_commands(
                 recv(ticker) -> _ => flush_all_batches(&mut store, &mut batch, &mut action_batch, &mut report, &stop),
                 recv(poll_ticker) -> _ => poll_recording_control(&store, &mut record_state, &config),
                 recv(heartbeat_ticker) -> _ => log_writer_heartbeat(&store, &mut sequencer, &batch, &action_batch, &report, &mut heartbeat, &config),
+                recv(open_focus_ticker) -> _ => beat_open_focus(&mut store, &mut sequencer, &mut open_focus),
                 recv(stop_ticker) -> _ => {
                     if stop.is_cancelled() {
                         break;
@@ -2090,6 +2137,7 @@ pub fn run_writer_with_commands(
                             report: &mut report,
                             heartbeat: &mut heartbeat,
                             record_state: &mut record_state,
+                            open_focus: &mut open_focus,
                             stop: &stop,
                             diagnostics: &config.diagnostics,
                             panic_action_cutoff: &config.panic_action_cutoff,
@@ -2103,6 +2151,7 @@ pub fn run_writer_with_commands(
                 recv(ticker) -> _ => flush_all_batches(&mut store, &mut batch, &mut action_batch, &mut report, &stop),
                 recv(poll_ticker) -> _ => poll_recording_control(&store, &mut record_state, &config),
                 recv(heartbeat_ticker) -> _ => log_writer_heartbeat(&store, &mut sequencer, &batch, &action_batch, &report, &mut heartbeat, &config),
+                recv(open_focus_ticker) -> _ => beat_open_focus(&mut store, &mut sequencer, &mut open_focus),
                 recv(stop_ticker) -> _ => {
                     if stop.is_cancelled() {
                         break;
@@ -2124,6 +2173,7 @@ pub fn run_writer_with_commands(
             report: &mut report,
             heartbeat: &mut heartbeat,
             record_state: &mut record_state,
+            open_focus: &mut open_focus,
             stop: &stop,
             diagnostics: &config.diagnostics,
             panic_action_cutoff: &config.panic_action_cutoff,
@@ -2140,6 +2190,10 @@ pub fn run_writer_with_commands(
         &mut report,
         &stop,
     );
+    // A clean stop leaves no open-focus row: the final focus rows are
+    // flushed above, so a row present at the next open means an ungraceful
+    // end — the invariant crash repair keys on.
+    clear_open_focus(&mut open_focus, &mut store);
     let ended_at = sequencer.timestamp_for(std::time::Instant::now());
     if let Err(error) = store.finalize_open_record_sessions(RecordStopReason::AppShutdown, ended_at)
     {
@@ -2210,14 +2264,21 @@ fn queue_captured(captured: Captured, runtime: &mut WriterRuntime<'_>) {
         resync_utc_ms,
         runtime.timebase_drift_threshold_ms,
     );
+    let was_focus_change = matches!(&captured.payload, EventPayload::FocusChanged { .. });
     let Some(captured) = runtime.policy.apply_exclusions_to_captured(captured) else {
+        if was_focus_change {
+            // An excluded app took focus: its dropped row carried the open
+            // segment's final dwell, so nothing may keep accruing to it —
+            // the model mirrors the stored stream, which just went dark.
+            clear_open_focus(runtime.open_focus, runtime.store);
+        }
         return;
     };
     runtime.heartbeat.mark_event(captured.payload.kind());
     let event = runtime.sequencer.stamp(captured);
-    runtime
-        .batch
-        .push(runtime.policy.apply_after_exclusions(event));
+    let event = runtime.policy.apply_after_exclusions(event);
+    note_open_focus_event(runtime.open_focus, runtime.store, &event);
+    runtime.batch.push(event);
     if runtime.batch.len() >= runtime.batch_size {
         flush_batch(runtime.store, runtime.batch, runtime.report, runtime.stop);
     }
@@ -2347,12 +2408,109 @@ struct WriterRuntime<'a> {
     report: &'a mut WriterReport,
     heartbeat: &'a mut WriterHeartbeat,
     record_state: &'a mut WriterRecordState,
+    open_focus: &'a mut OpenFocusState,
     stop: &'a StopToken,
     diagnostics: &'a DiagnosticsCounters,
     panic_action_cutoff: &'a PanicActionCutoff,
     erase_completion_boundary_ms: &'a mut Option<i64>,
     batch_size: usize,
     timebase_drift_threshold_ms: i64,
+}
+
+/// The writer's open foreground segment, mirrored from the stored row stream
+/// (foreground-heartbeat design, decisions 1-2). A stored `FocusChanged`
+/// names the newly open window unless it is a self-close row (`prev` equals
+/// `window` — the shape every capture close path emits for a segment that
+/// ended with no successor); boundary rows and exclusion-dropped focus rows
+/// end the segment outright. The single `open_focus` DB row is written only
+/// by the beat, and `row_written` remembers whether one exists so clears and
+/// replacements delete it exactly when a stale row could otherwise survive
+/// into crash repair and double-count a dwell the stream already recorded.
+#[derive(Default)]
+struct OpenFocusState {
+    segment: Option<OpenSegment>,
+    row_written: bool,
+}
+
+struct OpenSegment {
+    session_id: i64,
+    exe: String,
+    started_ts: i64,
+}
+
+/// End the open segment and remove its DB row if one was beaten out.
+fn clear_open_focus(state: &mut OpenFocusState, store: &mut GilbrethStore) {
+    state.segment = None;
+    if state.row_written {
+        if let Err(error) = store.delete_open_focus() {
+            warn!(%error, "failed to clear the open-focus row");
+        } else {
+            state.row_written = false;
+        }
+    }
+}
+
+/// Track the open segment from the stored stream. Runs on every event the
+/// writer actually queues, after stamping, so the segment carries the same
+/// session and timestamp the row does.
+fn note_open_focus_event(
+    state: &mut OpenFocusState,
+    store: &mut GilbrethStore,
+    event: &EventEnvelope,
+) {
+    match &event.payload {
+        EventPayload::FocusChanged { window, prev, .. } => {
+            if prev.as_ref() == Some(window) {
+                clear_open_focus(state, store);
+            } else {
+                // Replacing a segment whose row was already beaten out must
+                // drop that row now: the replacing row just recorded the old
+                // segment's dwell, and a crash before the next beat would
+                // otherwise synthesize it a second time.
+                if state.row_written {
+                    clear_open_focus(state, store);
+                }
+                state.segment = Some(OpenSegment {
+                    session_id: event.session_id,
+                    exe: exe_basename(&window.exe),
+                    started_ts: event.ts_unix_ms,
+                });
+            }
+        }
+        EventPayload::PowerSuspend { .. }
+        | EventPayload::SessionLock { .. }
+        | EventPayload::SessionDisconnect { .. }
+        | EventPayload::CapturePaused => {
+            clear_open_focus(state, store);
+        }
+        _ => {}
+    }
+}
+
+/// One open-focus beat: re-stamp the single row's high-water mark while a
+/// segment is open. The row is the crash evidence — at most one beat of
+/// dwell is lost, and a clean shutdown deletes it, so a row present at the
+/// next open means an ungraceful end.
+fn beat_open_focus(
+    store: &mut GilbrethStore,
+    sequencer: &mut Sequencer,
+    state: &mut OpenFocusState,
+) {
+    let Some(segment) = &state.segment else {
+        return;
+    };
+    let high_water = sequencer
+        .timestamp_for(Instant::now())
+        .max(segment.started_ts);
+    match store.upsert_open_focus(
+        segment.session_id,
+        &segment.exe,
+        segment.started_ts,
+        high_water,
+    ) {
+        Ok(()) => state.row_written = true,
+        Err(error) => warn!(%error, "open-focus beat failed"),
+    }
 }
 
 #[derive(Default)]
@@ -2382,6 +2540,12 @@ fn handle_writer_command(
             // sender's doc records that accepted double-failure residue.
             drain_writer_inputs(rx, runtime);
             runtime.policy.forget_focus_attribution();
+            // The Foreground gate is the one segment-closing path that emits
+            // no stored row on either platform (Windows keeps its state
+            // machine running silently; macOS drops the close row at the
+            // send gate), so this command doubles as the open-focus clear
+            // signal (foreground-heartbeat design, decision 2 close set).
+            clear_open_focus(runtime.open_focus, runtime.store);
             let _ = ack.send(());
         }
         WriterCommand::StartRecording {
@@ -2804,6 +2968,10 @@ fn secure_erase(
                 .sequencer
                 .projected_timestamp_for(erase_completed_at);
             *runtime.erase_completion_boundary_ms = Some(erase_completion_boundary_ms);
+            // The wipe removed the open_focus row with everything else, and
+            // the tracked segment belonged to the erased session.
+            runtime.open_focus.segment = None;
+            runtime.open_focus.row_written = false;
             reemit_active_sensitive_contexts(runtime, erase_completed_at);
             let report = SecureEraseReport::delete_committed(delete_report, new_session_id);
             match report.outcome {
@@ -2903,6 +3071,11 @@ fn archive_and_reset(
             // delayed row that missed the archive belongs in the fresh live
             // DB, so an earlier secure-erase gate must not cross this reset.
             *runtime.erase_completion_boundary_ms = None;
+            // The archive copy carried the open_focus row into stamping and
+            // the live reset wiped it; the tracked segment belonged to the
+            // archived session.
+            runtime.open_focus.segment = None;
+            runtime.open_focus.row_written = false;
             reemit_active_sensitive_contexts(runtime, Instant::now());
             let report =
                 ArchiveResetReport::reset_committed(archive, delete_report, new_session_id);
@@ -2981,6 +3154,12 @@ fn log_file_name(path: &Path) -> String {
 
 fn stamp_archive_open_sessions(archive_path: &Path, ended_at: i64) -> Result<(), StoreError> {
     let archive = Connection::open(archive_path)?;
+    // VACUUM INTO copied the open_focus row as-is; the archive must be
+    // self-contained, so it gets the same synthesize-and-clear treatment as
+    // crash repair, before the session stamp below can land on the
+    // synthesized timestamp. Usually a no-op: the suspension that precedes
+    // a privacy operation already closed the segment and cleared the row.
+    repair_open_focus(&archive)?;
     archive.execute(
         "UPDATE sessions SET ended_at = ?1 WHERE ended_at IS NULL",
         params![ended_at],
@@ -4310,6 +4489,7 @@ fn migrations() -> Migrations<'static> {
         M::up(DROP_REDUNDANT_SESSION_INDEX_SQL),
         M::up(RECORD_ROUTINE_SQL),
         M::up(ACTION_FRAMEWORK_CLASS_SQL),
+        M::up(OPEN_FOCUS_SQL),
     ])
 }
 
@@ -4362,6 +4542,108 @@ fn migrate(conn: &mut Connection) -> Result<(), StoreError> {
         }
         Err(error) => Err(error.into()),
     }
+}
+
+/// Convert an orphaned `open_focus` row into one synthesized `focus_changed`
+/// row in its session, flagged `recovered` in the payload, then delete the
+/// row (foreground-heartbeat design, decision 5). A clean shutdown deletes
+/// the row after the final flush, so reaching one here means the previous
+/// run ended ungracefully and the open segment's dwell would otherwise die
+/// with it. Runs at store open after migration and BEFORE
+/// `finalize_orphan_sessions`, so the orphan session stamp lands on the
+/// synthesized row's high-water timestamp; also run against the archive
+/// copy by `stamp_archive_open_sessions` so an archive is self-contained.
+fn repair_open_focus(conn: &Connection) -> Result<usize, StoreError> {
+    let row = conn
+        .query_row(
+            "SELECT session_id, exe, started_ts, high_water_ts FROM open_focus WHERE id = 1",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((session_id, exe, started_ts, high_water_ts)) = row else {
+        return Ok(0);
+    };
+    let high_water_ts = high_water_ts.max(started_ts);
+    let recovered_ms = high_water_ts - started_ts;
+    // events and action_events share one per-session seq universe, so the
+    // union keeps the synthesized seq both unique and contiguous.
+    let next_seq: i64 = conn.query_row(
+        "SELECT COALESCE(MAX(seq), 0) + 1 FROM (
+             SELECT seq FROM events WHERE session_id = ?1
+             UNION ALL
+             SELECT seq FROM action_events WHERE session_id = ?1
+         )",
+        [session_id],
+        |row| row.get(0),
+    )?;
+    // The dwell reader takes the app from `prev_exe` and the span from
+    // `duration_ms` ending at `ts`; the self-close shape (window == prev)
+    // matches what every capture close path emits for a segment that ended
+    // with no successor. hwnd 0 / pid 0 make no live-window claim, and no
+    // title is stored because the heartbeat row never carried one.
+    let window = WindowRef {
+        hwnd: 0,
+        exe: exe.unwrap_or_default(),
+        title: String::new(),
+        pid: 0,
+    };
+    let envelope = EventEnvelope {
+        schema_version: SCHEMA_VERSION,
+        session_id,
+        seq: u64::try_from(next_seq).unwrap_or(u64::MAX),
+        ts_unix_ms: high_water_ts,
+        source: Source::Foreground,
+        is_sensitive: false,
+        payload: EventPayload::FocusChanged {
+            window: window.clone(),
+            prev: Some(window),
+            previous_focused_for_ms: u64::try_from(recovered_ms).unwrap_or(0),
+            window_unfocused_for_ms: 0,
+            recovered: true,
+        },
+    };
+    let event_row = EventRow::from_envelope(&envelope)?;
+    conn.execute(
+        INSERT_EVENT_SQL,
+        params![
+            event_row.session_id,
+            event_row.seq,
+            event_row.ts,
+            event_row.source,
+            event_row.kind,
+            event_row.is_sensitive,
+            event_row.hwnd,
+            event_row.exe,
+            event_row.title,
+            event_row.pid,
+            event_row.prev_exe,
+            event_row.prev_title,
+            event_row.key,
+            event_row.mod_shift,
+            event_row.mod_ctrl,
+            event_row.mod_alt,
+            event_row.mod_win,
+            event_row.button,
+            event_row.pos_x,
+            event_row.pos_y,
+            event_row.duration_ms,
+            event_row.payload,
+        ],
+    )?;
+    conn.execute("DELETE FROM open_focus", [])?;
+    warn!(
+        session_id,
+        recovered_ms, "recovered an open focus segment from an ungraceful shutdown"
+    );
+    Ok(1)
 }
 
 fn finalize_orphan_sessions(conn: &Connection) -> Result<usize, StoreError> {
@@ -5242,6 +5524,7 @@ mod tests {
                 prev: None,
                 previous_focused_for_ms: 25,
                 window_unfocused_for_ms: 0,
+                recovered: false,
             },
         )
     }
@@ -7087,6 +7370,343 @@ mod tests {
             "no drained focus row may be lost"
         );
         assert_eq!(key_rows, 0, "a re-armed latch stored a post-forget key");
+    }
+
+    fn read_open_focus(path: &std::path::Path) -> Option<(i64, Option<String>, i64, i64)> {
+        Connection::open(path)
+            .ok()?
+            .query_row(
+                "SELECT session_id, exe, started_ts, high_water_ts FROM open_focus WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()
+            .ok()?
+    }
+
+    fn wait_for_open_focus_exe(path: &std::path::Path, expected: Option<&str>) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let row = read_open_focus(path);
+            let exe = row.as_ref().and_then(|row| row.1.as_deref());
+            if exe == expected {
+                return;
+            }
+            if Instant::now() >= deadline {
+                panic!("timed out waiting for open_focus exe {expected:?}; saw {row:?}");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    type OpenFocusWriterHarness = (
+        Sender<WriterInput>,
+        Sender<WriterCommand>,
+        std::thread::JoinHandle<Result<WriterReport, StoreError>>,
+        i64,
+    );
+
+    fn open_focus_writer(path: &std::path::Path, policy: Policy) -> OpenFocusWriterHarness {
+        let store = GilbrethStore::open(path).expect("store opens");
+        let base = Instant::now();
+        let session_id = store.create_session(1_000, "test").expect("session");
+        let sequencer = Sequencer::new(session_id, SessionTimebase::new(base, 1_000));
+        let stop = StopToken::new();
+        let (tx, rx) = bounded(32);
+        let (command_tx, command_rx) = bounded(4);
+        let handle = std::thread::spawn(move || {
+            run_writer_with_commands(
+                store,
+                rx,
+                command_rx,
+                stop,
+                sequencer,
+                policy,
+                WriterConfig {
+                    flush_interval: Duration::from_millis(25),
+                    batch_size: 1,
+                    open_focus_beat_interval: Duration::from_millis(25),
+                    ..WriterConfig::default()
+                },
+            )
+        });
+        (tx, command_tx, handle, session_id)
+    }
+
+    fn focus_to(exe: &str, at: Instant) -> Captured {
+        Captured::new(
+            Source::Foreground,
+            at,
+            EventPayload::FocusChanged {
+                window: WindowRef {
+                    hwnd: 0x11,
+                    exe: exe.to_string(),
+                    title: "t".to_string(),
+                    pid: 7,
+                },
+                prev: None,
+                previous_focused_for_ms: 0,
+                window_unfocused_for_ms: 0,
+                recovered: false,
+            },
+        )
+    }
+
+    #[test]
+    fn open_focus_beat_tracks_replaces_and_clean_stop_clears() {
+        let dir = tempdir().expect("temp dir");
+        let path = dir.path().join("gilbreth.db");
+        let (tx, command_tx, handle, session_id) = open_focus_writer(&path, Policy::identity());
+        let base = Instant::now();
+
+        tx.send(WriterInput::Motion(focus_to("first.exe", base)))
+            .expect("first focus");
+        wait_for_open_focus_exe(&path, Some("first.exe"));
+        let (row_session, _, started_first, high_first) =
+            read_open_focus(&path).expect("row present");
+        assert_eq!(row_session, session_id);
+        assert!(high_first >= started_first);
+
+        // A replacing focus row moves the segment; the beat keeps exactly
+        // one row (CHECK id = 1) and re-points it.
+        tx.send(WriterInput::Motion(focus_to(
+            "second.exe",
+            base + Duration::from_millis(10),
+        )))
+        .expect("second focus");
+        wait_for_open_focus_exe(&path, Some("second.exe"));
+        let count: i64 = Connection::open(&path)
+            .and_then(|conn| {
+                conn.query_row("SELECT COUNT(*) FROM open_focus", [], |row| row.get(0))
+            })
+            .expect("count");
+        assert_eq!(count, 1);
+
+        // A clean stop deletes the row after the final flush: row present at
+        // the next open means an ungraceful end, and this stop is graceful.
+        drop(tx);
+        drop(command_tx);
+        handle.join().expect("join").expect("writer");
+        assert_eq!(read_open_focus(&path), None);
+    }
+
+    #[test]
+    fn open_focus_clears_on_every_stored_close_path_row_kind() {
+        let dir = tempdir().expect("temp dir");
+        let path = dir.path().join("gilbreth.db");
+        let (tx, command_tx, handle, _) = open_focus_writer(
+            &path,
+            Policy::identity().with_excluded_apps(["private.exe"]),
+        );
+        let base = Instant::now();
+        let mut at = base;
+        let mut next_at = || {
+            at += Duration::from_millis(5);
+            at
+        };
+
+        let self_close = |at: Instant| {
+            let window = WindowRef {
+                hwnd: 0x11,
+                exe: "self.exe".to_string(),
+                title: "t".to_string(),
+                pid: 7,
+            };
+            Captured::new(
+                Source::Foreground,
+                at,
+                EventPayload::FocusChanged {
+                    window: window.clone(),
+                    prev: Some(window),
+                    previous_focused_for_ms: 40,
+                    window_unfocused_for_ms: 0,
+                    recovered: false,
+                },
+            )
+        };
+        let closers: Vec<(&str, Captured)> = vec![
+            ("self-close focus row", self_close(next_at())),
+            (
+                "power_suspend",
+                Captured::new(
+                    Source::System,
+                    next_at(),
+                    EventPayload::PowerSuspend { tick_ms: None },
+                ),
+            ),
+            (
+                "session_lock",
+                Captured::new(
+                    Source::System,
+                    next_at(),
+                    EventPayload::SessionLock { session_id: 1 },
+                ),
+            ),
+            (
+                "session_disconnect",
+                Captured::new(
+                    Source::System,
+                    next_at(),
+                    EventPayload::SessionDisconnect {
+                        session_id: 1,
+                        connection: SessionConnectionKind::Console,
+                    },
+                ),
+            ),
+            (
+                "capture_paused",
+                Captured::new(Source::System, next_at(), EventPayload::CapturePaused),
+            ),
+            ("excluded focus row", focus_to("private.exe", next_at())),
+        ];
+
+        for (label, closer) in closers {
+            tx.send(WriterInput::Motion(focus_to("open.exe", next_at())))
+                .expect("segment opens");
+            wait_for_open_focus_exe(&path, Some("open.exe"));
+            tx.send(WriterInput::Motion(closer)).expect(label);
+            wait_for_open_focus_exe(&path, None);
+        }
+
+        // The stream-gate path stores no row at all; the forget command is
+        // its clear signal (design decision 2 close set).
+        tx.send(WriterInput::Motion(focus_to("open.exe", next_at())))
+            .expect("segment opens");
+        wait_for_open_focus_exe(&path, Some("open.exe"));
+        let (ack_tx, ack_rx) = bounded(1);
+        command_tx
+            .send(WriterCommand::ForgetFocusAttribution { ack: ack_tx })
+            .expect("forget command");
+        ack_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("forget acked");
+        wait_for_open_focus_exe(&path, None);
+
+        drop(tx);
+        drop(command_tx);
+        handle.join().expect("join").expect("writer");
+    }
+
+    #[test]
+    fn open_focus_repair_synthesizes_recovered_row_and_is_idempotent() {
+        let dir = tempdir().expect("temp dir");
+        let path = dir.path().join("gilbreth.db");
+        let session_id;
+        {
+            let store = GilbrethStore::open(&path).expect("store opens");
+            session_id = store.create_session(1_000, "test").expect("session");
+            insert_minimal_event(store.connection(), session_id, 7, 2_000);
+            store
+                .upsert_open_focus(session_id, "crashed.exe", 10_000, 40_000)
+                .expect("orphan row simulating a crash");
+        }
+
+        // Reopen: repair must synthesize before the orphan stamp so the
+        // session ends on the recovered high-water mark.
+        let store = GilbrethStore::open(&path).expect("reopen repairs");
+        let conn = store.connection();
+        let (seq, ts, exe, prev_exe, duration_ms, payload): (
+            i64,
+            i64,
+            Option<String>,
+            Option<String>,
+            Option<i64>,
+            String,
+        ) = conn
+            .query_row(
+                "SELECT seq, ts, exe, prev_exe, duration_ms, payload FROM events \
+                 WHERE kind = 'focus_changed' AND session_id = ?1",
+                [session_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .expect("synthesized row present");
+        assert_eq!(seq, 8, "seq continues the session's shared universe");
+        assert_eq!(ts, 40_000, "row lands on the high-water mark");
+        assert_eq!(exe.as_deref(), Some("crashed.exe"));
+        assert_eq!(
+            prev_exe.as_deref(),
+            Some("crashed.exe"),
+            "the dwell reader takes the app from prev_exe"
+        );
+        assert_eq!(duration_ms, Some(30_000));
+        assert!(
+            payload.contains("\"recovered\":true"),
+            "the payload carries the additive recovery flag: {payload}"
+        );
+        assert_eq!(
+            session_ended_at(conn, session_id),
+            Some(40_000),
+            "the orphan stamp lands on the synthesized timestamp"
+        );
+        assert_eq!(read_open_focus(&path), None, "repair consumes the row");
+        drop(store);
+
+        // Idempotent: a second open finds no row and synthesizes nothing.
+        let store = GilbrethStore::open(&path).expect("second open");
+        let focus_rows: i64 = store
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE kind = 'focus_changed'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count");
+        assert_eq!(focus_rows, 1);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn archive_stamps_open_focus_into_the_archive_copy_and_repair_matches() {
+        let dir = tempdir().expect("temp dir");
+        let path = dir.path().join("gilbreth.db");
+        let store = GilbrethStore::open(&path).expect("store opens");
+        let session_id = store.create_session(1_000, "test").expect("session");
+        insert_minimal_event(store.connection(), session_id, 1, 2_000);
+        store
+            .upsert_open_focus(session_id, "open.exe", 10_000, 40_000)
+            .expect("open segment row");
+
+        let archive_path = dir.path().join("activity.gla");
+        store
+            .archive_activity_to(&archive_path, 50_000)
+            .expect("archive");
+
+        let archive = open_dpapi_archive(&archive_path);
+        let open_focus_rows: i64 = archive
+            .query_row("SELECT COUNT(*) FROM open_focus", [], |row| row.get(0))
+            .expect("open_focus queryable in archive");
+        assert_eq!(open_focus_rows, 0, "the archive carries no open segment");
+        let (ts, duration_ms, payload): (i64, Option<i64>, String) = archive
+            .query_row(
+                "SELECT ts, duration_ms, payload FROM events WHERE kind = 'focus_changed'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("synthesized row in archive");
+        assert_eq!(ts, 40_000);
+        assert_eq!(duration_ms, Some(30_000));
+        assert!(payload.contains("\"recovered\":true"));
+        let ended_at: Option<i64> = archive
+            .query_row(
+                "SELECT ended_at FROM sessions WHERE session_id = ?1",
+                [session_id],
+                |row| row.get(0),
+            )
+            .expect("archived session");
+        assert_eq!(ended_at, Some(50_000), "the archive stamp still lands");
+
+        // The live DB keeps its row: only the erase that follows in the
+        // archive/reset command wipes it.
+        assert!(read_open_focus(&path).is_some());
     }
 
     #[test]
@@ -11116,6 +11736,7 @@ mod tests {
             ),
             ("005_record_routine.sql", RECORD_ROUTINE_SQL),
             ("006_action_framework_class.sql", ACTION_FRAMEWORK_CLASS_SQL),
+            ("007_open_focus.sql", OPEN_FOCUS_SQL),
         ];
 
         for (name, sql) in post_initial_migrations {
@@ -11173,6 +11794,11 @@ mod tests {
                 include_str!(
                     "../tests/fixtures/released_migrations/006_action_framework_class.sql"
                 ),
+            ),
+            (
+                "007_open_focus.sql",
+                OPEN_FOCUS_SQL,
+                include_str!("../tests/fixtures/released_migrations/007_open_focus.sql"),
             ),
         ];
 
