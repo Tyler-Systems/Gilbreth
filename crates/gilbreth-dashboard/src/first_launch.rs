@@ -6,6 +6,11 @@
 //! physical pixels on the monitor the OS actually chose, which makes the
 //! math DPI- and multi-monitor-correct without touching process DPI
 //! awareness (winit has already set it by then).
+//!
+//! Accepted residual: the gate is presence-based while eframe's restore is
+//! parse-based, so a present-but-undeserializable window entry means one
+//! launch at the unfitted default (eframe rewrites the entry on the next
+//! graceful close). The exact eframe pin bounds the shape-drift risk.
 
 /// The storage key eframe writes window geometry under
 /// (`epi_integration::STORAGE_WINDOW_KEY` in eframe 0.35). When present,
@@ -56,7 +61,11 @@ fn fit_outer_rect(outer: Rect, work: Rect) -> Option<Rect> {
 }
 
 /// Best-effort: every failure leaves the OS placement in force. The window
-/// exists but has not painted yet, so a move here is invisible.
+/// is on screen but unpainted here (first paint happens strictly after the
+/// creation closure), so the move can show as an unpainted-frame jump on a
+/// slow surface init — content never renders at the wrong size. If that
+/// jump proves visible in the first-run walk, the follow-up is
+/// `with_visible(false)` plus a show after the first frame.
 #[cfg(windows)]
 pub(crate) fn fit_first_launch_window(cc: &eframe::CreationContext<'_>) {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -181,6 +190,12 @@ mod tests {
         assert_eq!(
             fit_outer_rect((100, 100, 3000, 2000), (1920, 200, 1280, 800)),
             Some((1920, 200, 1280, 800))
+        );
+        // A monitor left of primary has a negative origin; the clamp arms
+        // must be sign-agnostic.
+        assert_eq!(
+            fit_outer_rect((-2000, -50, 800, 600), (-1920, 0, 1920, 1040)),
+            Some((-1920, 0, 800, 600))
         );
     }
 
