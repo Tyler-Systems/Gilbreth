@@ -1404,12 +1404,15 @@ impl PanicActionCutoff {
 
 #[derive(Clone, Debug)]
 pub enum WriterCommand {
-    /// Invalidate the writer policy's live focus attribution. The app sends
-    /// this when the user turns the Foreground stream off, before closing the
-    /// stream gate: rows still in flight carry their own attribution, and
-    /// rows without any fail closed from here on (exclusion fail-open fix).
-    /// The ack exists so tests can order the command against later inputs;
-    /// the tray drops its receiver without waiting.
+    /// Invalidate the writer policy's live focus attribution (exclusion
+    /// fail-open fix). The app sends this when the user turns the Foreground
+    /// stream off, AFTER closing the stream gate and flushing the capture
+    /// forwarder: the writer then drains its own input channel before
+    /// forgetting, so no in-flight FocusChanged can re-arm the latch with a
+    /// stale verdict once the forget lands. Rows without attribution fail
+    /// closed from the forget on. The ack exists so tests can order the
+    /// command against later inputs; the tray drops its receiver without
+    /// waiting.
     ForgetFocusAttribution {
         ack: Sender<()>,
     },
@@ -2367,6 +2370,13 @@ fn handle_writer_command(
 ) {
     match command {
         WriterCommand::ForgetFocusAttribution { ack } => {
+            // Drain queued rows before forgetting: a FocusChanged applied
+            // after the forget would re-arm the latch with a stale verdict
+            // for the entire off period. The sender closes the Foreground
+            // gate and flushes the capture forwarder before sending, so
+            // every in-flight FocusChanged already sits in `rx` here — a
+            // try_recv sweep suffices, and no quiet-period stall is needed.
+            drain_writer_inputs(rx, runtime);
             runtime.policy.forget_focus_attribution();
             let _ = ack.send(());
         }
@@ -6984,6 +6994,95 @@ mod tests {
             .filter_map(|row| row.2.as_deref())
             .collect();
         assert_eq!(keys, vec!["A", "C"], "the post-forget key must not store");
+    }
+
+    #[test]
+    fn forget_drains_in_flight_focus_rows_so_none_can_re_arm_the_latch() {
+        // The re-arm race (review finding F1): a FocusChanged already queued
+        // when the forget command is processed must be applied BEFORE the
+        // forget, not after — applied after, it would hold a stale
+        // not-excluded verdict for the entire off period. The select loop
+        // draws from both channels in random order, so each iteration is a
+        // coin flip without the handler's drain; twenty iterations make a
+        // regression effectively certain to trip the post-ack assert.
+        let dir = tempdir().expect("temp dir");
+        let path = dir.path().join("gilbreth.db");
+        let store = GilbrethStore::open(&path).expect("store opens");
+        let base = Instant::now();
+        let session_id = store.create_session(1_000, "test").expect("session");
+        let sequencer = Sequencer::new(session_id, SessionTimebase::new(base, 1_000));
+        let stop = StopToken::new();
+        let (tx, rx) = bounded(32);
+        let (command_tx, command_rx) = bounded(4);
+        let handle = std::thread::spawn(move || {
+            run_writer_with_commands(
+                store,
+                rx,
+                command_rx,
+                stop,
+                sequencer,
+                Policy::identity().with_excluded_apps(["private.exe"]),
+                WriterConfig {
+                    flush_interval: Duration::from_secs(60),
+                    batch_size: 1,
+                    ..WriterConfig::default()
+                },
+            )
+        });
+
+        const ROUNDS: u64 = 20;
+        for round in 0..ROUNDS {
+            let at = base + Duration::from_millis(10 * round + 10);
+            let mut allowed_focus = captured_focus("allowed", at);
+            if let EventPayload::FocusChanged { window, .. } = &mut allowed_focus.payload {
+                window.exe = r"C:\Windows\System32\calc.exe".to_string();
+            }
+            tx.send(WriterInput::Motion(allowed_focus))
+                .expect("in-flight focus row");
+            // Sent immediately, racing the focus row for the select loop.
+            let (ack_tx, ack_rx) = bounded(1);
+            command_tx
+                .send(WriterCommand::ForgetFocusAttribution { ack: ack_tx })
+                .expect("forget command");
+            ack_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("forget acked");
+            tx.send(WriterInput::Motion(Captured::new(
+                Source::Keyboard,
+                at + Duration::from_millis(1),
+                EventPayload::Key {
+                    key: "X".to_string(),
+                    mods: Modifiers::default(),
+                    window: None,
+                    key_class: None,
+                },
+            )))
+            .expect("post-ack window-less key");
+        }
+        drop(tx);
+        drop(command_tx);
+        let report = handle.join().expect("join").expect("writer");
+
+        // Every focus row survives the drain (the drain applies rows, it
+        // does not discard them); every post-ack window-less key fails
+        // closed because the drained latch is forgotten.
+        assert_eq!(report.events_written, ROUNDS as usize);
+        let conn = Connection::open(&path).expect("reader");
+        let (focus_rows, key_rows): (i64, i64) = conn
+            .query_row(
+                "SELECT \
+                     SUM(CASE WHEN kind = 'focus_changed' THEN 1 ELSE 0 END), \
+                     SUM(CASE WHEN kind = 'key' THEN 1 ELSE 0 END) \
+                 FROM events",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("counts");
+        assert_eq!(
+            focus_rows, ROUNDS as i64,
+            "no drained focus row may be lost"
+        );
+        assert_eq!(key_rows, 0, "a re-armed latch stored a post-forget key");
     }
 
     #[test]

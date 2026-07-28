@@ -1593,6 +1593,36 @@ fn flush_capture_forwarder(flush_tx: &Sender<CaptureFlushReply>) -> Result<(), S
         .map_err(|error| format!("capture forwarder did not confirm a quiet pipeline: {error}"))
 }
 
+/// Turning the Foreground stream off must invalidate the writer policy's
+/// focus latch (the exclusion fail-open fix): no FocusChanged can correct it
+/// while the stream is off, so window-less rows would inherit the last
+/// verdict for the whole off period. The caller closes the stream gate
+/// FIRST; this then flushes the capture-forwarder hop and sends the forget,
+/// whose writer-side handler drains its input channel before forgetting —
+/// with no new FocusChanged producible, none can re-arm the latch after the
+/// forget. A flush failure still sends the forget: the writer-side drain is
+/// the second line of defense, and any residue over-drops rather than
+/// failing open. The forget is deliberately unconditional on the exclusion
+/// list: exclusions saved for the next start must meet an already-closed
+/// latch. No-op for every other stream or direction.
+fn forget_focus_attribution_on_stream_toggle(
+    stream: CaptureStream,
+    enabled: bool,
+    capture_flush: &Sender<CaptureFlushReply>,
+    commands: &Sender<WriterCommand>,
+) {
+    if stream != CaptureStream::Foreground || enabled {
+        return;
+    }
+    if let Err(error) = flush_capture_forwarder(capture_flush) {
+        error!(%error, "forwarder flush before focus-attribution forget failed");
+    }
+    let (ack, _) = bounded(1);
+    if let Err(error) = commands.send(WriterCommand::ForgetFocusAttribution { ack }) {
+        error!(%error, "failed to send focus-attribution forget");
+    }
+}
+
 fn enqueue_capture_pause_row(
     writer_inputs: &Sender<WriterInput>,
     payload: EventPayload,
@@ -2285,25 +2315,16 @@ impl Tray {
 
     fn toggle_stream(&mut self, stream: CaptureStream) {
         let enabled = !self.config.capture.is_enabled(stream);
-        if stream == CaptureStream::Foreground && !enabled {
-            // No FocusChanged can correct the writer policy's focus latch
-            // while the stream is off, so the latch must be forgotten or
-            // window-less input inherits the last verdict for the whole off
-            // period (the exclusion fail-open). Sent BEFORE the gate closes:
-            // rows captured in between still carry live attribution, so any
-            // channel race over-drops instead of failing open. The ack is a
-            // test affordance; the tray does not wait.
-            let (ack, _) = bounded(1);
-            if let Err(error) = self
-                .privacy_commands
-                .writer_commands
-                .send(WriterCommand::ForgetFocusAttribution { ack })
-            {
-                error!(%error, "failed to send focus-attribution forget");
-            }
-        }
         self.config.capture.set_enabled(stream, enabled);
         self.controls.set_enabled(stream, enabled);
+        // Runs after the gate change above: forgetting the focus latch is
+        // only race-free once no new FocusChanged can be produced.
+        forget_focus_attribution_on_stream_toggle(
+            stream,
+            enabled,
+            &self.privacy_commands.capture_flush,
+            &self.privacy_commands.writer_commands,
+        );
         self.menu_item(stream).set_checked(enabled);
 
         if let Err(error) = config::save_capture_toggle(&self.config_path, stream, enabled) {
@@ -4938,6 +4959,60 @@ mod tests {
     use std::{process::Stdio, sync::Mutex};
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn foreground_disable_flushes_forwarder_before_sending_forget() {
+        let (flush_tx, flush_rx) = bounded::<CaptureFlushReply>(1);
+        let (command_tx, command_rx) = bounded(4);
+        // Stand-in forwarder: the flush must be requested and acked while
+        // the command channel is still empty — the writer-side drain only
+        // guarantees no FocusChanged survives the forget if the forwarder
+        // hop was emptied first.
+        let forwarder = thread::spawn(move || {
+            let reply = flush_rx.recv().expect("flush requested");
+            assert!(
+                command_rx.try_recv().is_err(),
+                "the forget must not be sent before the forwarder hop is flushed"
+            );
+            reply.send(()).expect("flush ack");
+            command_rx
+        });
+
+        forget_focus_attribution_on_stream_toggle(
+            CaptureStream::Foreground,
+            false,
+            &flush_tx,
+            &command_tx,
+        );
+
+        let command_rx = forwarder.join().expect("forwarder thread");
+        match command_rx.recv_timeout(Duration::from_secs(2)) {
+            Ok(WriterCommand::ForgetFocusAttribution { .. }) => {}
+            _ => panic!("expected the forget command after the flush"),
+        }
+    }
+
+    #[test]
+    fn only_the_foreground_off_toggle_forgets_focus_attribution() {
+        let (flush_tx, flush_rx) = bounded::<CaptureFlushReply>(1);
+        let (command_tx, command_rx) = bounded(4);
+
+        forget_focus_attribution_on_stream_toggle(
+            CaptureStream::Foreground,
+            true,
+            &flush_tx,
+            &command_tx,
+        );
+        forget_focus_attribution_on_stream_toggle(
+            CaptureStream::Keyboard,
+            false,
+            &flush_tx,
+            &command_tx,
+        );
+
+        assert!(flush_rx.try_recv().is_err(), "no flush may be requested");
+        assert!(command_rx.try_recv().is_err(), "no forget may be sent");
+    }
 
     #[test]
     fn dashboard_process_routing_requires_the_exact_flag() {
