@@ -1600,11 +1600,13 @@ fn flush_capture_forwarder(flush_tx: &Sender<CaptureFlushReply>) -> Result<(), S
 /// FIRST; this then flushes the capture-forwarder hop and sends the forget,
 /// whose writer-side handler drains its input channel before forgetting —
 /// with no new FocusChanged producible, none can re-arm the latch after the
-/// forget. A flush failure still sends the forget: the writer-side drain is
-/// the second line of defense, and any residue over-drops rather than
-/// failing open. The forget is deliberately unconditional on the exclusion
-/// list: exclusions saved for the next start must meet an already-closed
-/// latch. No-op for every other stream or direction.
+/// forget. A flush failure (writer wedged past the 2 s timeout) still sends
+/// the forget, but the guarantee degrades: a pre-gate FocusChanged still
+/// upstream of the writer when the drain runs applies after the forget and
+/// re-arms the latch with its stale verdict — accepted as a double-failure
+/// residue rather than handled. The forget is unconditional on the
+/// exclusion list (simpler, and exclusions cannot change mid-run). No-op
+/// for every other stream or direction.
 fn forget_focus_attribution_on_stream_toggle(
     stream: CaptureStream,
     enabled: bool,

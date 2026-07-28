@@ -1409,10 +1409,11 @@ pub enum WriterCommand {
     /// stream off, AFTER closing the stream gate and flushing the capture
     /// forwarder: the writer then drains its own input channel before
     /// forgetting, so no in-flight FocusChanged can re-arm the latch with a
-    /// stale verdict once the forget lands. Rows without attribution fail
-    /// closed from the forget on. The ack exists so tests can order the
-    /// command against later inputs; the tray drops its receiver without
-    /// waiting.
+    /// stale verdict once the forget lands (a timed-out flush degrades this
+    /// to an accepted low-probability residue — see the sender's doc). Rows
+    /// without attribution fail closed from the forget on. The ack exists so
+    /// tests can order the command against later inputs; the tray drops its
+    /// receiver without waiting.
     ForgetFocusAttribution {
         ack: Sender<()>,
     },
@@ -2373,9 +2374,12 @@ fn handle_writer_command(
             // Drain queued rows before forgetting: a FocusChanged applied
             // after the forget would re-arm the latch with a stale verdict
             // for the entire off period. The sender closes the Foreground
-            // gate and flushes the capture forwarder before sending, so
-            // every in-flight FocusChanged already sits in `rx` here — a
-            // try_recv sweep suffices, and no quiet-period stall is needed.
+            // gate and flushes the capture forwarder before sending, so on
+            // the ordinary path every in-flight FocusChanged already sits in
+            // `rx` here and a try_recv sweep suffices without a quiet-period
+            // stall. If that flush timed out, a straggler FocusChanged can
+            // still apply after this sweep and re-arm the latch — the
+            // sender's doc records that accepted double-failure residue.
             drain_writer_inputs(rx, runtime);
             runtime.policy.forget_focus_attribution();
             let _ = ack.send(());
