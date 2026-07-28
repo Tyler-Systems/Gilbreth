@@ -132,11 +132,14 @@ pub trait EventSource: Send {
 pub const DEFAULT_IDLE_THRESHOLD_MS: u64 = 3 * 60 * 1000;
 
 /// Cadence of the writer's `open_focus` heartbeat (the foreground-heartbeat
-/// design, 2026-07-12 owner decision 4): a crash loses at most one beat of
-/// open-segment dwell, and readers treat a row as live only while its
-/// high-water mark is within two beats of the read. Shared here because the
-/// writer (gilbreth-store) beats on it and the readers (gilbreth-read) apply
-/// the freshness rule against it.
+/// design, 2026-07-12 owner decision 4): a crash mid-segment loses at most
+/// one beat of open-segment dwell (a crash inside the close path's
+/// delete-then-flush window can still lose that whole segment — the
+/// deliberate trade, since the reverse order would double-count), and
+/// readers treat a row as live only while its high-water mark is within two
+/// beats of the read. Shared here because the writer (gilbreth-store) beats
+/// on it and the readers (gilbreth-read) apply the freshness rule against
+/// it.
 pub const OPEN_FOCUS_BEAT_MS: i64 = 30_000;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]

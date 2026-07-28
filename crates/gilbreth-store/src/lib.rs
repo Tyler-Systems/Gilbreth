@@ -196,8 +196,13 @@ impl GilbrethStore {
         migrate(&mut conn)?;
         ensure_meta_identity(&conn, unix_now_ms())?;
         // Before the orphan stamp: the synthesized row's high-water
-        // timestamp becomes the crashed session's MAX(events.ts).
-        repair_open_focus(&conn)?;
+        // timestamp becomes the crashed session's MAX(events.ts). A repair
+        // failure must not brick startup — discard the row best-effort and
+        // continue; losing the crashed dwell is the safe direction.
+        if let Err(error) = repair_open_focus(&conn) {
+            warn!(%error, "open-focus repair failed; discarding the row");
+            let _ = conn.execute("DELETE FROM open_focus", []);
+        }
         finalize_orphan_sessions(&conn)?;
         finalize_orphan_record_sessions(&conn)?;
         reconcile_confirmed_record_requests(&conn, unix_now_ms())?;
@@ -833,7 +838,6 @@ impl GilbrethStore {
         tx.execute("DELETE FROM record_sessions", [])?;
         tx.execute("DELETE FROM record_requests", [])?;
         tx.execute("DELETE FROM selector_paths", [])?;
-        // Before sessions: open_focus carries a sessions FK.
         tx.execute("DELETE FROM open_focus", [])?;
         tx.execute("DELETE FROM events", [])?;
         tx.execute("DELETE FROM sessions", [])?;
@@ -2488,9 +2492,11 @@ fn note_open_focus_event(
 }
 
 /// One open-focus beat: re-stamp the single row's high-water mark while a
-/// segment is open. The row is the crash evidence — at most one beat of
-/// dwell is lost, and a clean shutdown deletes it, so a row present at the
-/// next open means an ungraceful end.
+/// segment is open. The row is the crash evidence — a crash mid-segment
+/// loses at most one beat of dwell (a crash inside a close path's
+/// delete-then-flush window loses that segment instead: the deliberate
+/// trade, since the reverse order would double-count), and a clean shutdown
+/// deletes it, so a row present at the next open means an ungraceful end.
 fn beat_open_focus(
     store: &mut GilbrethStore,
     sequencer: &mut Sequencer,
@@ -4553,8 +4559,11 @@ fn migrate(conn: &mut Connection) -> Result<(), StoreError> {
 /// `finalize_orphan_sessions`, so the orphan session stamp lands on the
 /// synthesized row's high-water timestamp; also run against the archive
 /// copy by `stamp_archive_open_sessions` so an archive is self-contained.
+/// The insert and the delete commit as one transaction: a crash between
+/// them would otherwise synthesize the same dwell again on the next open.
 fn repair_open_focus(conn: &Connection) -> Result<usize, StoreError> {
-    let row = conn
+    let tx = conn.unchecked_transaction()?;
+    let row = tx
         .query_row(
             "SELECT session_id, exe, started_ts, high_water_ts FROM open_focus WHERE id = 1",
             [],
@@ -4571,11 +4580,30 @@ fn repair_open_focus(conn: &Connection) -> Result<usize, StoreError> {
     let Some((session_id, exe, started_ts, high_water_ts)) = row else {
         return Ok(0);
     };
+    // A row whose session already ended gracefully means the final
+    // row-delete failed on a clean stop: the dwell is already recorded, so
+    // synthesizing it again would double-count. Consume the row silently.
+    let session_ended: Option<bool> = tx
+        .query_row(
+            "SELECT ended_at IS NOT NULL FROM sessions WHERE session_id = ?1",
+            [session_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if session_ended != Some(false) {
+        tx.execute("DELETE FROM open_focus", [])?;
+        tx.commit()?;
+        warn!(
+            session_id,
+            "discarded an open-focus row whose session already ended; no dwell synthesized"
+        );
+        return Ok(0);
+    }
     let high_water_ts = high_water_ts.max(started_ts);
     let recovered_ms = high_water_ts - started_ts;
     // events and action_events share one per-session seq universe, so the
     // union keeps the synthesized seq both unique and contiguous.
-    let next_seq: i64 = conn.query_row(
+    let next_seq: i64 = tx.query_row(
         "SELECT COALESCE(MAX(seq), 0) + 1 FROM (
              SELECT seq FROM events WHERE session_id = ?1
              UNION ALL
@@ -4611,7 +4639,7 @@ fn repair_open_focus(conn: &Connection) -> Result<usize, StoreError> {
         },
     };
     let event_row = EventRow::from_envelope(&envelope)?;
-    conn.execute(
+    tx.execute(
         INSERT_EVENT_SQL,
         params![
             event_row.session_id,
@@ -4638,7 +4666,8 @@ fn repair_open_focus(conn: &Connection) -> Result<usize, StoreError> {
             event_row.payload,
         ],
     )?;
-    conn.execute("DELETE FROM open_focus", [])?;
+    tx.execute("DELETE FROM open_focus", [])?;
+    tx.commit()?;
     warn!(
         session_id,
         recovered_ms, "recovered an open focus segment from an ungraceful shutdown"
@@ -7661,6 +7690,42 @@ mod tests {
             )
             .expect("count");
         assert_eq!(focus_rows, 1);
+    }
+
+    #[test]
+    fn repair_discards_an_open_focus_row_whose_session_already_ended() {
+        // The failed-final-DELETE shape: the close row flushed and the
+        // session ended cleanly, but the open_focus delete did not land.
+        // Synthesizing would double-count the dwell the close row already
+        // recorded, so repair consumes the row without a synthesized row.
+        let dir = tempdir().expect("temp dir");
+        let path = dir.path().join("gilbreth.db");
+        {
+            let store = GilbrethStore::open(&path).expect("store opens");
+            let session_id = store.create_session(1_000, "test").expect("session");
+            insert_minimal_event(store.connection(), session_id, 1, 2_000);
+            store.end_session(session_id, 3_000).expect("clean end");
+            store
+                .upsert_open_focus(session_id, "survivor.exe", 10_000, 40_000)
+                .expect("row surviving a clean stop");
+        }
+
+        let store = GilbrethStore::open(&path).expect("reopen");
+        let focus_rows: i64 = store
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE kind = 'focus_changed'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count");
+        assert_eq!(focus_rows, 0, "no dwell may be synthesized");
+        assert_eq!(read_open_focus(&path), None, "the survivor row is consumed");
+        assert_eq!(
+            session_ended_at(store.connection(), 1),
+            Some(3_000),
+            "the clean end stamp is untouched"
+        );
     }
 
     #[cfg(windows)]

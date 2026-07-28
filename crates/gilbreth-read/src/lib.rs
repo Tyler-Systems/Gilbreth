@@ -1098,9 +1098,42 @@ fn live_open_focus(conn: &Connection, now_ms: i64) -> rusqlite::Result<Option<Li
     }))
 }
 
+/// An idle span that is still open at the read: the session's last
+/// idle/active row is an `idle` with no `active` after it. Completed-row
+/// readers drop such spans (their fallback terminator, `sessions.ended_at`,
+/// is NULL for the live session), which is honest for intervals that ended
+/// before the idleness began — but the live open interval extends to now,
+/// so the in-progress idleness must subtract or empty-desk time reads as
+/// active on the Today tile until the user returns.
+fn open_trailing_idle_span(
+    conn: &Connection,
+    session_id: i64,
+    end_ts: i64,
+) -> rusqlite::Result<Option<(i64, i64)>> {
+    let last: Option<(String, i64, i64)> = conn
+        .query_row(
+            "SELECT kind, ts, COALESCE(duration_ms, 0) FROM events
+             WHERE session_id = ?1 AND kind IN ('idle', 'active')
+             ORDER BY ts DESC, id DESC LIMIT 1",
+            [session_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?;
+    Ok(match last {
+        Some((kind, ts, elapsed_ms)) if kind == "idle" => {
+            // The idle row carries the already-elapsed idle when the
+            // threshold crossed, so the span starts before the row's ts —
+            // the same reconstruction idle_intervals uses.
+            let start = (ts - elapsed_ms).max(0);
+            (start < end_ts).then_some((start, end_ts))
+        }
+        _ => None,
+    })
+}
+
 /// The open segment's contribution under a scope cutoff: raw dwell and the
 /// idle/sleep-subtracted active portion, using the same per-session
-/// subtraction completed rows get.
+/// subtraction completed rows get plus the still-open trailing idle span.
 fn open_focus_contribution(
     conn: &Connection,
     open: &LiveOpenFocus,
@@ -1123,6 +1156,15 @@ fn open_focus_contribution(
     let ids = [open.session_id];
     let mut inactive = idle_intervals(conn, &ids, None)?;
     inactive.extend(sleep_intervals(conn, &ids)?);
+    if let Some((idle_start, idle_end)) =
+        open_trailing_idle_span(conn, open.session_id, open.end_ts)?
+    {
+        inactive.push(SessionInterval {
+            session_id: open.session_id,
+            start_ts: idle_start,
+            end_ts: idle_end,
+        });
+    }
     let active = add_active_foreground_ms(std::slice::from_ref(&interval), &inactive)
         .pop()
         .map(|row| row.active_foreground_ms)
@@ -4781,21 +4823,30 @@ pub fn weekly_digest_core(conn: &Connection, now_ms: i64) -> rusqlite::Result<We
         let band_end = open.end_ts.min(now_ms);
         if band_end > band_start {
             let session_away = away_by_session.get(&open.session_id).unwrap_or(&empty);
+            // The still-open trailing idle span is invisible to the
+            // completed-row away spans (its terminator has not landed yet)
+            // but must subtract from an interval that extends to now.
+            let trailing_idle: Vec<(i64, i64)> =
+                open_trailing_idle_span(conn, open.session_id, open.end_ts)?
+                    .into_iter()
+                    .collect();
             let app = display_app(Some(&open.exe));
             let open_date = local_date(open.end_ts);
-            for (span_start, span_end) in subtract_spans(band_start, band_end, session_away) {
-                let this_part = overlap_ms(span_start, span_end, week_start, now_ms);
-                prior_active += overlap_ms(span_start, span_end, prior_start, week_start);
-                this_active += this_part;
-                if this_part != 0 {
-                    bump_ordered(
-                        &mut this_by_app,
-                        &mut this_by_app_index,
-                        app.clone(),
-                        this_part,
-                    );
-                    if week_dates.contains(&open_date) {
-                        active_dates.insert(open_date.clone());
+            for (away_start, away_end) in subtract_spans(band_start, band_end, session_away) {
+                for (span_start, span_end) in subtract_spans(away_start, away_end, &trailing_idle) {
+                    let this_part = overlap_ms(span_start, span_end, week_start, now_ms);
+                    prior_active += overlap_ms(span_start, span_end, prior_start, week_start);
+                    this_active += this_part;
+                    if this_part != 0 {
+                        bump_ordered(
+                            &mut this_by_app,
+                            &mut this_by_app_index,
+                            app.clone(),
+                            this_part,
+                        );
+                        if week_dates.contains(&open_date) {
+                            active_dates.insert(open_date.clone());
+                        }
                     }
                 }
             }
@@ -11597,6 +11648,40 @@ mod tests {
         let raw = high_water - day_start;
         assert_eq!(story.foreground_ms, raw);
         assert_eq!(story.active_ms, raw - (idle_end - idle_start));
+    }
+
+    #[test]
+    fn today_story_subtracts_a_still_open_idle_span_from_the_open_interval() {
+        let conn = open_focus_fixture_db();
+        let now_ms = open_focus_noon_now();
+        let started = now_ms - 30 * 60_000;
+        let high_water = now_ms - 5_000;
+        conn.execute(
+            "INSERT INTO open_focus (id, session_id, exe, started_ts, high_water_ts) \
+             VALUES (1, 1, 'editor.exe', ?1, ?2)",
+            rusqlite::params![started, high_water],
+        )
+        .expect("open row");
+        // An idle row with no active row after it: the user is idle RIGHT
+        // NOW. The span reconstructs backwards by the already-elapsed idle
+        // and must subtract through the interval's end.
+        let idle_ts = now_ms - 10 * 60_000;
+        let elapsed_ms = 3 * 60_000;
+        conn.execute(
+            "INSERT INTO events (session_id, seq, ts, kind, duration_ms, payload) \
+             VALUES (1, 1, ?1, 'idle', ?2, '{}')",
+            rusqlite::params![idle_ts, elapsed_ms],
+        )
+        .expect("open idle row");
+
+        let story = today_story(&conn, now_ms).expect("story reads");
+        let raw = high_water - started;
+        assert_eq!(story.foreground_ms, raw, "in-front time keeps idle");
+        assert_eq!(
+            story.active_ms,
+            raw - (high_water - (idle_ts - elapsed_ms)),
+            "active time excludes the idleness happening right now"
+        );
     }
 
     #[test]
