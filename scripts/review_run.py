@@ -30,6 +30,10 @@ RECOVERED_FOCUS_RE = re.compile(
     r"recovered an open focus segment from an ungraceful shutdown",
     re.IGNORECASE,
 )
+OPEN_FOCUS_DISCARD_RE = re.compile(
+    r"discarded an open-focus row whose session already ended",
+    re.IGNORECASE,
+)
 EVENTS_SKIPPED_RE = re.compile(r"events_skipped[=:\s]+(\d+)", re.IGNORECASE)
 LOG_TIMESTAMP_RE = re.compile(
     r"^(?P<timestamp>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}"
@@ -99,6 +103,7 @@ class LogSummary:
     orphan_session_repair_warning_lines: int
     stale_pre_erase_drop_warning_lines: int
     recovered_focus_warning_lines: int
+    open_focus_discard_warning_lines: int
     max_events_skipped: int
 
     @property
@@ -112,6 +117,7 @@ class LogSummary:
             + self.orphan_session_repair_warning_lines
             + self.stale_pre_erase_drop_warning_lines
             + self.recovered_focus_warning_lines
+            + self.open_focus_discard_warning_lines
         )
         return max(0, self.warning_lines - known_warnings)
 
@@ -267,6 +273,7 @@ def review_logs(
             orphan_session_repair_warning_lines=0,
             stale_pre_erase_drop_warning_lines=0,
             recovered_focus_warning_lines=0,
+            open_focus_discard_warning_lines=0,
             max_events_skipped=0,
         )
 
@@ -277,6 +284,7 @@ def review_logs(
     orphan_session_repair_warning_lines = 0
     stale_pre_erase_drop_warning_lines = 0
     recovered_focus_warning_lines = 0
+    open_focus_discard_warning_lines = 0
     max_events_skipped = 0
     for path in files:
         try:
@@ -294,6 +302,8 @@ def review_logs(
                             stale_pre_erase_drop_warning_lines += 1
                         if RECOVERED_FOCUS_RE.search(line):
                             recovered_focus_warning_lines += 1
+                        if OPEN_FOCUS_DISCARD_RE.search(line):
+                            open_focus_discard_warning_lines += 1
                     if LOG_ERROR_OR_PANIC_RE.search(line):
                         error_panic_lines += 1
                     for match in EVENTS_SKIPPED_RE.finditer(line):
@@ -310,6 +320,7 @@ def review_logs(
         orphan_session_repair_warning_lines=orphan_session_repair_warning_lines,
         stale_pre_erase_drop_warning_lines=stale_pre_erase_drop_warning_lines,
         recovered_focus_warning_lines=recovered_focus_warning_lines,
+        open_focus_discard_warning_lines=open_focus_discard_warning_lines,
         max_events_skipped=max_events_skipped,
     )
 
@@ -411,6 +422,7 @@ def format_report(review: DatabaseReview, logs: LogSummary | None) -> str:
             f"orphan_session_repair_warnings={logs.orphan_session_repair_warning_lines}, "
             f"stale_pre_erase_drop_warnings={logs.stale_pre_erase_drop_warning_lines}, "
             f"recovered_focus_warnings={logs.recovered_focus_warning_lines}, "
+            f"open_focus_discard_warnings={logs.open_focus_discard_warning_lines}, "
             f"max_events_skipped={logs.max_events_skipped}"
         )
         if logs.files > 1:

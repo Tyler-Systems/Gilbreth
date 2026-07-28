@@ -384,6 +384,40 @@ def test_review_run_reports_recovered_focus_rows_without_marking_them_unhealthy(
     assert "recovered_focus_warnings=1" in report
 
 
+def test_review_run_classifies_an_open_focus_discard_as_known(tmp_path: Path) -> None:
+    """The discard fires on the ordinary rollback-return path (an older
+    build stamped the crashed session's end while leaving the heartbeat row
+    behind), so it must read as a known category, not an unknown-warning
+    REVIEW."""
+    path = tmp_path / "discard.db"
+    create_db(path)
+    conn = sqlite3.connect(path)
+    try:
+        insert_session(conn, 1, started_at=1_000, ended_at=10_000)
+        insert_event(conn, 1, session_id=1, seq=1, ts=2_000)
+        conn.commit()
+    finally:
+        conn.close()
+
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir()
+    (logs_dir / "gilbreth.log").write_text(
+        "2026-07-28T09:00:00Z  WARN discarded an open-focus row whose session "
+        "already ended; no dwell synthesized session_id=1\n",
+        encoding="utf-8",
+    )
+
+    review = review_database(path)
+    logs = review_logs(logs_dir)
+    report = format_report(review, logs)
+
+    assert logs.open_focus_discard_warning_lines == 1
+    assert logs.unknown_warning_lines == 0
+    assert logs.healthy is True
+    assert "Status: PASS" in report
+    assert "open_focus_discard_warnings=1" in report
+
+
 def test_review_run_flags_capture_events_dropped(tmp_path: Path) -> None:
     path = tmp_path / "capture-drops.db"
     create_db(path)

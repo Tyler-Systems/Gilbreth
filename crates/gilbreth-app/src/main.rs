@@ -804,6 +804,7 @@ fn run_native_dashboard() -> Result<()> {
                 orphan_session_repair_warning_lines: summary.orphan_session_repair_warning_lines,
                 stale_pre_erase_drop_warning_lines: summary.stale_pre_erase_drop_warning_lines,
                 recovered_focus_warning_lines: summary.recovered_focus_warning_lines,
+                open_focus_discard_warning_lines: summary.open_focus_discard_warning_lines,
                 max_events_skipped: summary.max_events_skipped,
             }
         }),

@@ -533,6 +533,7 @@ pub struct LogReview {
     pub orphan_session_repair_warning_lines: i64,
     pub stale_pre_erase_drop_warning_lines: i64,
     pub recovered_focus_warning_lines: i64,
+    pub open_focus_discard_warning_lines: i64,
     pub max_events_skipped: i64,
 }
 
@@ -542,7 +543,8 @@ impl LogReview {
             - self.clipboard_locked_warning_lines
             - self.orphan_session_repair_warning_lines
             - self.stale_pre_erase_drop_warning_lines
-            - self.recovered_focus_warning_lines)
+            - self.recovered_focus_warning_lines
+            - self.open_focus_discard_warning_lines)
             .max(0)
     }
 

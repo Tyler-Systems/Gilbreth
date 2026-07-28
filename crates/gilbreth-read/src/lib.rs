@@ -11728,12 +11728,23 @@ mod tests {
             rusqlite::params![started, high_water],
         )
         .expect("open row");
+        // A still-open idle span (no active row after it) subtracts from
+        // the weekly open interval too, through the second span pass.
+        let idle_ts = now_ms - 5 * 60_000;
+        let elapsed_ms = 60_000;
+        conn.execute(
+            "INSERT INTO events (session_id, seq, ts, kind, duration_ms, payload) \
+             VALUES (1, 1, ?1, 'idle', ?2, '{}')",
+            rusqlite::params![idle_ts, elapsed_ms],
+        )
+        .expect("open idle row");
 
         let digest = weekly_digest_core(&conn, now_ms).expect("digest reads");
-        assert_eq!(digest.active_ms, high_water - started);
+        let expected_active = (high_water - started) - (high_water - (idle_ts - elapsed_ms));
+        assert_eq!(digest.active_ms, expected_active);
         assert_eq!(digest.top_apps.len(), 1);
         assert_eq!(digest.top_apps[0].app, "editor.exe");
-        assert_eq!(digest.top_apps[0].active_ms, high_water - started);
+        assert_eq!(digest.top_apps[0].active_ms, expected_active);
         assert_eq!(digest.active_days, 1);
         assert_eq!(
             digest.switches_per_active_hour,

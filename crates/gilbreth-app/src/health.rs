@@ -20,6 +20,7 @@ pub struct LogReviewSummary {
     pub orphan_session_repair_warning_lines: i64,
     pub stale_pre_erase_drop_warning_lines: i64,
     pub recovered_focus_warning_lines: i64,
+    pub open_focus_discard_warning_lines: i64,
     pub max_events_skipped: i64,
 }
 
@@ -32,7 +33,8 @@ impl LogReviewSummary {
             - self.clipboard_locked_warning_lines
             - self.orphan_session_repair_warning_lines
             - self.stale_pre_erase_drop_warning_lines
-            - self.recovered_focus_warning_lines)
+            - self.recovered_focus_warning_lines
+            - self.open_focus_discard_warning_lines)
             .max(0)
     }
 
@@ -82,6 +84,14 @@ fn recovered_focus_re() -> &'static Regex {
     RE.get_or_init(|| {
         Regex::new(r"(?i)recovered an open focus segment from an ungraceful shutdown")
             .expect("recovered focus pattern compiles")
+    })
+}
+
+fn open_focus_discard_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"(?i)discarded an open-focus row whose session already ended")
+            .expect("open-focus discard pattern compiles")
     })
 }
 
@@ -144,6 +154,9 @@ pub fn classify_line(line: &str, summary: &mut LogReviewSummary) {
         }
         if recovered_focus_re().is_match(line) {
             summary.recovered_focus_warning_lines += 1;
+        }
+        if open_focus_discard_re().is_match(line) {
+            summary.open_focus_discard_warning_lines += 1;
         }
     }
     if error_or_panic_re().is_match(line) {
@@ -259,12 +272,18 @@ mod tests {
              from an ungraceful shutdown session_id=1 recovered_ms=30000",
             &mut summary,
         );
+        classify_line(
+            "2026-07-28T10:06:00Z WARN gilbreth_store: discarded an open-focus row whose \
+             session already ended; no dwell synthesized session_id=1",
+            &mut summary,
+        );
 
-        assert_eq!(summary.warning_lines, 5);
+        assert_eq!(summary.warning_lines, 6);
         assert_eq!(summary.clipboard_locked_warning_lines, 1);
         assert_eq!(summary.orphan_session_repair_warning_lines, 1);
         assert_eq!(summary.stale_pre_erase_drop_warning_lines, 1);
         assert_eq!(summary.recovered_focus_warning_lines, 1);
+        assert_eq!(summary.open_focus_discard_warning_lines, 1);
         assert_eq!(summary.unknown_warning_lines(), 1);
         assert_eq!(summary.error_panic_lines, 2);
         assert_eq!(summary.max_events_skipped, 9);

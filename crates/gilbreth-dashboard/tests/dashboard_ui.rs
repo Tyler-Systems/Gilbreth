@@ -1209,6 +1209,7 @@ fn diagnostics_snapshot_rich() -> DiagnosticsSnapshot {
             orphan_session_repair_warning_lines: 1,
             stale_pre_erase_drop_warning_lines: 0,
             recovered_focus_warning_lines: 0,
+            open_focus_discard_warning_lines: 0,
             max_events_skipped: 0,
         }),
         permissions: None,

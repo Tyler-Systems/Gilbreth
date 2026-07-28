@@ -546,6 +546,12 @@ fn known_categories_value(logs: &LogReview) -> Option<String> {
             logs.recovered_focus_warning_lines
         ));
     }
+    if logs.open_focus_discard_warning_lines > 0 {
+        parts.push(format!(
+            "open-focus-discard {}",
+            logs.open_focus_discard_warning_lines
+        ));
+    }
     if parts.is_empty() {
         None
     } else {
@@ -559,7 +565,8 @@ fn health_check_section(ui: &mut egui::Ui, health: &DatabaseHealth, logs: &LogRe
     let known_count = logs.clipboard_locked_warning_lines
         + logs.orphan_session_repair_warning_lines
         + logs.stale_pre_erase_drop_warning_lines
-        + logs.recovered_focus_warning_lines;
+        + logs.recovered_focus_warning_lines
+        + logs.open_focus_discard_warning_lines;
     let mut summary = if reasons.is_empty() {
         "all clean".to_string()
     } else {

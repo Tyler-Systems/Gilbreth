@@ -11810,7 +11810,51 @@ mod tests {
                 !statements.is_empty(),
                 "migration {name} should contain at least one SQL statement"
             );
+            // Migrations already shipped in a public release are
+            // grandfathered: every released binary knows their children and
+            // deletes them before the referenced tables, so their FKs never
+            // meet an ignorant binary. Only sessions references existed at
+            // the v0.1.1 frontier.
+            let grandfathered = name == "005_record_routine.sql";
+            // Tables this migration itself creates: FKs among them are
+            // rollback-safe because an older binary never touches them.
+            let created_here: Vec<String> = statements
+                .iter()
+                .filter_map(|statement| {
+                    let lowered = statement.to_ascii_lowercase();
+                    let rest = lowered.trim_start().strip_prefix("create table")?;
+                    Some(
+                        rest.trim_start()
+                            .split(|c: char| c.is_whitespace() || c == '(')
+                            .next()?
+                            .to_string(),
+                    )
+                })
+                .collect();
             for statement in statements {
+                // A REFERENCES clause pointing at a pre-existing table is a
+                // rollback trap even though the CREATE TABLE shape passes:
+                // an older binary deletes the referenced table's rows
+                // without knowing about this child, and foreign_keys = ON
+                // fails its erase/prune/archive transactions (the 007 FK
+                // finding). References must stay within the migration that
+                // created the target.
+                let lowered = statement.to_ascii_lowercase();
+                let mut rest = lowered.as_str();
+                while let Some(position) = rest.find("references") {
+                    let after = &rest[position + "references".len()..];
+                    let target = after
+                        .trim_start()
+                        .split(|c: char| c.is_whitespace() || c == '(')
+                        .next()
+                        .unwrap_or("")
+                        .to_string();
+                    assert!(
+                        grandfathered || created_here.contains(&target),
+                        "migration {name} declares a foreign key to pre-existing table                          {target}: an older binary deletes from {target} without knowing                          this child exists, so its erase/prune/archive transactions fail                          under foreign_keys = ON. Enforce the linkage in code instead                          (the 007 open_focus finding)."
+                    );
+                    rest = after;
+                }
                 assert!(
                     is_rollback_compatible_statement(&statement),
                     "migration {name} contains a non-additive/non-index statement: {statement}. \
