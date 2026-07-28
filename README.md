@@ -149,8 +149,8 @@ Gilbreth v2 is one Rust executable with two process roles: the long-running tray
 ┌───────────────────────────────────────────────┐                  ┌──────────────────────────┐
 │       gilbreth-app  (capture/tray role)       │                  │ gilbreth-app --dashboard │
 │                                               │                  │      (Rust / egui)       │
-│ capture ──▶ privacy filter ──▶ SQLite write   │ ──▶ gilbreth.db  │ native views • analytics │
-│ (Win32)     (framed door,      (batched,      │ ◀── WAL reads ── │  privacy/config actions  │
+│ capture ──> privacy filter ──> SQLite write   │ ──> gilbreth.db  │ native views + analytics │
+│ (Win32)     (framed door,      (batched,      │ <── WAL reads ── │  privacy/config actions  │
 │ tray shell  open by default)   single-writer) │                  │ selected delete / prune  │
 └───────────────────────────────────────────────┘                  └──────────────────────────┘
 ```
