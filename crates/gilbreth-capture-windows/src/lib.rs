@@ -670,13 +670,38 @@ struct SystemWindow {
     clipboard_listener_registered: bool,
 }
 
+/// The system window's class, shared by creation and the external quit
+/// request below.
+const SYSTEM_WINDOW_CLASS: windows::core::PCWSTR = w!("GilbrethSystemWindow");
+
+/// Ask the running Gilbreth instance to exit gracefully: posts WM_CLOSE to
+/// its hidden system window, which routes to the same quit path as
+/// WM_ENDSESSION and tray Quit. This is the app's `--quit` flag and the
+/// sanctioned scripted stop — observed live 2026-07-28, taskkill's polite
+/// path delivers WM_CLOSE to the tray host window instead (ghosting the
+/// icon while capture keeps running) and never reaches this one. Returns
+/// true when a window acknowledged the post; false when no instance is
+/// running. Never call this from tests: FindWindowW searches the whole
+/// desktop, so a test would find and quit the developer's live instance.
+pub fn request_running_instance_quit() -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, PostMessageW};
+    unsafe {
+        match FindWindowW(SYSTEM_WINDOW_CLASS, None) {
+            Ok(hwnd) if !hwnd.is_invalid() => {
+                PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0)).is_ok()
+            }
+            _ => false,
+        }
+    }
+}
+
 impl SystemWindow {
     fn create(periodic_timer_interval_ms: Option<u32>) -> Result<Self, CaptureError> {
         let hmodule = unsafe { GetModuleHandleW(None) }.map_err(|error| {
             CaptureError::WindowsApi(format!("GetModuleHandleW failed: {error}"))
         })?;
         let hinstance = HINSTANCE(hmodule.0);
-        let class_name = w!("GilbrethSystemWindow");
+        let class_name = SYSTEM_WINDOW_CLASS;
 
         let class = WNDCLASSW {
             lpfnWndProc: Some(system_wnd_proc),
@@ -4281,13 +4306,15 @@ unsafe extern "system" fn system_wnd_proc(
             }
         });
     } else if msg == WM_CLOSE {
-        // Every realistic sender of WM_CLOSE to this hidden window —
-        // taskkill without /F, Task Manager's polite path, installer and
-        // updater close requests — means "exit gracefully", so it routes
-        // to the same quit path as WM_ENDSESSION. Returning handled (not
-        // DefWindowProc) keeps the window alive for the pump's post-loop
-        // flush; the default would destroy just the window and leave a
-        // half-dead app (the 2026-07-28 ghost-tray observation).
+        // Every sender of WM_CLOSE to this hidden window means "exit
+        // gracefully" — the app's own `--quit` flag targets it by class,
+        // and installer/automation close requests can too — so it routes
+        // to the same quit path as WM_ENDSESSION. (taskkill's polite path
+        // was observed 2026-07-28 delivering WM_CLOSE to the tray host
+        // window instead, never here — hence `--quit`.) Returning handled
+        // (not DefWindowProc) keeps the window alive for the pump's
+        // post-loop flush; the default would destroy just the window and
+        // leave a half-dead app (the ghost-tray observation).
         info!("close requested on the capture window; stopping capture pump");
         unsafe {
             PostQuitMessage(0);

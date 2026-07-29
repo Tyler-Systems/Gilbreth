@@ -91,6 +91,11 @@ const PAUSE_CAPTURE_MENU_ID: &str = "pause_capture";
 /// Second-process flag: the tray spawns the same exe with this argument to
 /// open the egui dashboard (S4 process model — one binary, no socket).
 const DASHBOARD_PROCESS_FLAG: &str = "--dashboard";
+/// The scripted graceful stop: ask the running instance to exit through
+/// the WM_CLOSE quit path (same flush as tray Quit). Exit code 0 when an
+/// instance acknowledged, 1 when none was found.
+#[cfg(windows)]
+const QUIT_FLAG: &str = "--quit";
 // Archive and reset is Windows-only until the mac key wrap is decided
 // (owner decision 2026-07-19: no mac archive lane at MAC-2). `dpapi_protect`
 // cannot succeed off Windows, so shipping the item would ship an action that
@@ -415,6 +420,18 @@ fn main() -> Result<()> {
     let arguments: Vec<_> = std::env::args_os().skip(1).collect();
     if let Some(command) = uninstall::parse_offline_command(arguments.iter().cloned())? {
         return uninstall::execute(command, APP_VERSION, GIT_SHA);
+    }
+    // `--quit` routes before the single-instance guard: it must talk to the
+    // running instance, never become one.
+    #[cfg(windows)]
+    if arguments
+        .iter()
+        .any(|argument| argument.as_os_str() == QUIT_FLAG)
+    {
+        if gilbreth_capture_windows::request_running_instance_quit() {
+            return Ok(());
+        }
+        std::process::exit(1);
     }
     // The dashboard runs as a second process of this same exe (S4 process
     // model). It is not a capture owner, so route it before the capture-scoped
