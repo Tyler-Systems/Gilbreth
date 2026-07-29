@@ -92,8 +92,10 @@ const PAUSE_CAPTURE_MENU_ID: &str = "pause_capture";
 /// open the egui dashboard (S4 process model — one binary, no socket).
 const DASHBOARD_PROCESS_FLAG: &str = "--dashboard";
 /// The scripted graceful stop: ask the running instance to exit through
-/// the WM_CLOSE quit path (same flush as tray Quit). Exit code 0 when an
-/// instance acknowledged, 1 when none was found.
+/// the WM_CLOSE quit path (same flush as tray Quit). Exit code 0 when the
+/// request was posted to a found window — the flush completes
+/// asynchronously, so poll for process exit before touching the database;
+/// 1 when no window was found.
 #[cfg(windows)]
 const QUIT_FLAG: &str = "--quit";
 // Archive and reset is Windows-only until the mac key wrap is decided
