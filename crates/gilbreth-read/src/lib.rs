@@ -266,8 +266,14 @@ fn input_sweep_predicate(alias: &str) -> String {
         .map(|kind| format!("'{kind}'"))
         .collect::<Vec<_>>()
         .join(", ");
+    // The LIKE guard skips the per-row JSON parse for the overwhelmingly
+    // common payloads carrying no input_origin field at all; a payload
+    // containing the substring still gets the exact json_extract verdict,
+    // so the accepted set is unchanged.
     format!(
-        "{alias}.kind IN ({kinds}) AND ({alias}.kind = 'key' OR {origin} != 'remote_relay_suspected')"
+        "{alias}.kind IN ({kinds}) AND ({alias}.kind = 'key' \
+         OR {alias}.payload NOT LIKE '%input_origin%' \
+         OR {origin} != 'remote_relay_suspected')"
     )
 }
 
@@ -1387,29 +1393,75 @@ struct InputEvent {
 /// Mirrors `_read_input_runs`: input rows ordered by `(session_id, seq)`,
 /// split only by session boundaries or reconstructed idle/sleep spans.
 pub fn input_runs(conn: &Connection, scope: &Scope) -> rusqlite::Result<Vec<InputRun>> {
+    Ok(input_runs_and_counts(conn, scope)?.0)
+}
+
+type InputCountsByApp = Vec<(String, HashMap<String, i64>)>;
+
+/// The sweep plus the per-app input-kind tally from one table scan. The
+/// separate GROUP BY pass this replaces re-paid the full input predicate
+/// over every row — half the exposure reader's cost at 1M events. The
+/// tally keeps the old pass's semantics exactly (same COALESCE exe shape,
+/// `display_app` merge, first-seen app order); only tie order among equal
+/// breakdown rows can differ, and the breakdown sorts before use.
+fn input_runs_and_counts(
+    conn: &Connection,
+    scope: &Scope,
+) -> rusqlite::Result<(Vec<InputRun>, InputCountsByApp)> {
     let (where_clause, params) = scope_predicate("e", scope);
     let input_predicate = input_sweep_predicate("e");
+    // Deliberately no ORDER BY: with the kind predicate the planner picks
+    // idx_events_kind and pays a temp b-tree for SQL-side ordering (measured
+    // slower than this Rust sort on the real schema — the budget review's
+    // F1 finding).
     let sql = format!(
         "SELECT e.session_id, e.seq, e.ts,
-                COALESCE(NULLIF(e.exe, ''), '(unknown)') AS exe
+                COALESCE(NULLIF(e.exe, ''), '(unknown)') AS exe,
+                e.kind
          FROM events e
          WHERE {input_predicate}
-           AND {where_clause}
-         ORDER BY e.session_id, e.seq"
+           AND {where_clause}"
     );
     let mut stmt = conn.prepare(&sql)?;
     let mut rows = stmt.query(rusqlite::params_from_iter(params))?;
     let mut events: Vec<InputEvent> = Vec::new();
+    let mut counts: InputCountsByApp = Vec::new();
+    let mut count_index_by_exe: HashMap<String, usize> = HashMap::new();
     while let Some(row) = rows.next()? {
+        let exe: String = row.get(3)?;
+        {
+            let kind = row.get_ref(4)?.as_str()?;
+            let index = match count_index_by_exe.get(&exe) {
+                Some(index) => *index,
+                None => {
+                    let app = display_app(Some(&exe));
+                    let index = counts
+                        .iter()
+                        .position(|(existing, _)| *existing == app)
+                        .unwrap_or_else(|| {
+                            counts.push((app, HashMap::new()));
+                            counts.len() - 1
+                        });
+                    count_index_by_exe.insert(exe.clone(), index);
+                    index
+                }
+            };
+            let bucket = &mut counts[index].1;
+            if let Some(slot) = bucket.get_mut(kind) {
+                *slot += 1;
+            } else {
+                bucket.insert(kind.to_string(), 1);
+            }
+        }
         events.push(InputEvent {
             session_id: row.get(0)?,
             seq: row.get(1)?,
             ts: row.get(2)?,
-            exe: row.get(3)?,
+            exe,
         });
     }
     if events.is_empty() {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), counts));
     }
 
     let session_ids: Vec<i64> = normalized_session_ids(
@@ -1449,6 +1501,7 @@ pub fn input_runs(conn: &Connection, scope: &Scope) -> rusqlite::Result<Vec<Inpu
         run
     }
 
+    events.sort_by_key(|event| (event.session_id, event.seq));
     let mut runs: Vec<InputRun> = Vec::new();
     let mut current: Option<InputRun> = None;
     let mut prev_session: Option<i64> = None;
@@ -1509,7 +1562,7 @@ pub fn input_runs(conn: &Connection, scope: &Scope) -> rusqlite::Result<Vec<Inpu
     if let Some(run) = current {
         runs.push(finalize(run));
     }
-    Ok(runs)
+    Ok((runs, counts))
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -1632,41 +1685,6 @@ fn input_active_by_app_and_day(
     (per_app, per_day, total)
 }
 
-fn input_counts_by_app(
-    conn: &Connection,
-    scope: &Scope,
-) -> rusqlite::Result<Vec<(String, HashMap<String, i64>)>> {
-    let (where_clause, params) = scope_predicate("e", scope);
-    let input_predicate = input_sweep_predicate("e");
-    let sql = format!(
-        "SELECT COALESCE(NULLIF(e.exe, ''), '(unknown)') AS exe, e.kind, COUNT(*) AS n
-         FROM events e
-         WHERE {input_predicate}
-           AND {where_clause}
-         GROUP BY COALESCE(NULLIF(e.exe, ''), '(unknown)'), e.kind"
-    );
-    let mut stmt = conn.prepare(&sql)?;
-    let mut rows = stmt.query(rusqlite::params_from_iter(params))?;
-    let mut counts: Vec<(String, HashMap<String, i64>)> = Vec::new();
-    let mut index_by_app: HashMap<String, usize> = HashMap::new();
-    while let Some(row) = rows.next()? {
-        let exe: String = row.get(0)?;
-        let kind: String = row.get(1)?;
-        let n: i64 = row.get(2)?;
-        let app = display_app(Some(&exe));
-        let index = if let Some(index) = index_by_app.get(&app) {
-            *index
-        } else {
-            let index = counts.len();
-            index_by_app.insert(app.clone(), index);
-            counts.push((app, HashMap::new()));
-            index
-        };
-        *counts[index].1.entry(kind).or_insert(0) += n;
-    }
-    Ok(counts)
-}
-
 fn input_day_band(per_day_avg_ms: Option<f64>) -> Option<String> {
     let value = per_day_avg_ms?;
     if value >= INPUT_EXPOSURE_DAY_HIGH_MS {
@@ -1683,12 +1701,11 @@ pub fn input_exposure_metrics(
     conn: &Connection,
     scope: &Scope,
 ) -> rusqlite::Result<InputExposureMetrics> {
-    let runs = input_runs(conn, scope)?;
+    let (runs, counts) = input_runs_and_counts(conn, scope)?;
     if runs.is_empty() {
         return Ok(empty_input_exposure_metrics());
     }
     let focus = focus_intervals(conn, scope)?;
-    let counts = input_counts_by_app(conn, scope)?;
     let total_events: i64 = counts
         .iter()
         .map(|(_, bucket)| bucket.values().sum::<i64>())
@@ -3644,11 +3661,18 @@ fn clipboard_bridge_records(
     scope: &Scope,
 ) -> rusqlite::Result<Vec<ClipboardBridgeRecord>> {
     let (where_clause, params) = scope_predicate("e", scope);
+    // A zero-format update is a clipboard *clear* (the password-manager
+    // auto-wipe convention), not a copy — it must not seed a hand-off
+    // bracket (the reliability-smalls demotion; chip task_be8583fd).
+    // 'unavailable' stays: the clipboard really changed, only the metadata
+    // read was locked out.
     let clip_sql = format!(
         "SELECT e.session_id, e.seq, e.ts,
                 json_extract(e.payload, '$.text_char_count') AS text_char_count
          FROM events e
-         WHERE e.kind = 'clipboard_used' AND {where_clause}
+         WHERE e.kind = 'clipboard_used'
+           AND COALESCE(json_extract(e.payload, '$.format_kind'), '') != 'empty'
+           AND {where_clause}
          ORDER BY e.session_id, e.seq"
     );
     let mut stmt = conn.prepare(&clip_sql)?;
@@ -10487,11 +10511,12 @@ mod tests {
     /// `read_input_exposure_metrics` measured ~4.6 s over a 1M-event
     /// database — the slowest reader, against peers near 1.5 s. This pins
     /// the Rust reader to the peer budget on a same-shape file-backed
-    /// fixture (real schema subset: the `UNIQUE(session_id, seq)` index
-    /// the sweep orders by, the analytics index, JSON payloads the
-    /// predicate extracts). Fixture generation costs a few seconds and
-    /// the number only means anything in release, so the test is ignored
-    /// by default; run it explicitly:
+    /// fixture carrying the live index set (001's ts/kind/exe indexes and
+    /// the 003 composite, minus the 004-dropped session index) and
+    /// populated JSON payloads, so the measured query plan is the one a
+    /// production database runs. Fixture generation costs a few seconds
+    /// and the number only means anything in release, so the test is
+    /// ignored by default; run it explicitly:
     /// `cargo test -p gilbreth-read --release -- --ignored million_event --nocapture`
     #[test]
     #[ignore = "1M-event perf budget; run explicitly with --release"]
@@ -10545,6 +10570,9 @@ mod tests {
                  is_sensitive INTEGER NOT NULL DEFAULT 0,
                  UNIQUE(session_id, seq)
              );
+             CREATE INDEX idx_events_ts ON events(ts);
+             CREATE INDEX idx_events_kind ON events(kind);
+             CREATE INDEX idx_events_exe ON events(exe);
              CREATE INDEX idx_events_session_kind_ts_id
                  ON events(session_id, kind, ts, id);",
         )
@@ -10561,8 +10589,8 @@ mod tests {
             let mut event_stmt = conn
                 .prepare(
                     "INSERT INTO events
-                         (session_id, seq, ts, source, kind, exe, prev_exe, duration_ms)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                         (session_id, seq, ts, source, kind, exe, prev_exe, duration_ms, payload)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 )
                 .expect("event insert prepares");
             for session in 0..SESSIONS {
@@ -10572,26 +10600,39 @@ mod tests {
                 for index in 0..rows_per_session {
                     let exe = EXES[(index as usize / 37) % EXES.len()];
                     let prev_exe = EXES[(index as usize / 37 + 1) % EXES.len()];
-                    let (source, kind, duration): (&str, &str, Option<i64>) = if index % 4_999 == 0
-                    {
-                        // A sparse idle/active pair breaks runs the way
-                        // real capture does.
-                        ts += 180_000;
-                        ("system", "idle", Some(180_000))
-                    } else if index % 4_999 == 1 {
-                        ("system", "active", None)
-                    } else {
-                        match index % 20 {
-                            0..=7 => ("mouse", "mouse_move", None),
-                            8..=12 => ("keyboard", "key", None),
-                            13..=15 => ("mouse", "mouse_click", None),
-                            16 => ("mouse", "mouse_wheel", None),
-                            _ => ("system", "focus_changed", Some(4_000)),
-                        }
-                    };
+                    // Payloads carry populated JSON like real rows so the
+                    // predicate's per-row json_extract pays a realistic
+                    // parse, and a sparse remote-relay marker exercises the
+                    // non-local branch (the review's F2).
+                    const MOVE_PAYLOAD: &str = "{\"dx_total\":12,\"dy_total\":-5,\
+                         \"distance_px\":18,\"raw_event_count\":3,\"duration_ms\":250,\
+                         \"x\":512,\"y\":388}";
+                    const RELAY_PAYLOAD: &str = "{\"dx_total\":4,\"dy_total\":2,\
+                         \"distance_px\":5,\"raw_event_count\":1,\"duration_ms\":80,\
+                         \"input_origin\":\"remote_relay_suspected\"}";
+                    const CLICK_PAYLOAD: &str = "{\"button\":\"left\",\"x\":512,\"y\":388}";
+                    const FOCUS_PAYLOAD: &str = "{\"hwnd\":4242}";
+                    let (source, kind, duration, payload): (&str, &str, Option<i64>, &str) =
+                        if index % 4_999 == 0 {
+                            // A sparse idle/active pair breaks runs the way
+                            // real capture does.
+                            ts += 180_000;
+                            ("system", "idle", Some(180_000), "{}")
+                        } else if index % 4_999 == 1 {
+                            ("system", "active", None, "{}")
+                        } else {
+                            match index % 20 {
+                                0..=6 => ("mouse", "mouse_move", None, MOVE_PAYLOAD),
+                                7 => ("mouse", "mouse_move", None, RELAY_PAYLOAD),
+                                8..=12 => ("keyboard", "key", None, "{}"),
+                                13..=15 => ("mouse", "mouse_click", None, CLICK_PAYLOAD),
+                                16 => ("mouse", "mouse_wheel", None, CLICK_PAYLOAD),
+                                _ => ("system", "focus_changed", Some(4_000), FOCUS_PAYLOAD),
+                            }
+                        };
                     event_stmt
                         .execute(rusqlite::params![
-                            session_id, index, ts, source, kind, exe, prev_exe, duration
+                            session_id, index, ts, source, kind, exe, prev_exe, duration, payload
                         ])
                         .expect("fixture row inserts");
                     ts += 700;
@@ -10621,6 +10662,53 @@ mod tests {
             "input_exposure_metrics took {elapsed:?} over {TOTAL_ROWS} events; \
              the peer reader budget is {MILLION_EVENT_BUDGET:?}"
         );
+    }
+
+    /// The reliability-smalls clipboard demotion (chip task_be8583fd): a
+    /// zero-format clipboard update is a clear (the password-manager
+    /// auto-wipe), not a copy, and must not seed a hand-off bracket even a
+    /// perfect one — while a locked-metadata 'unavailable' row in the same
+    /// bracket still counts, because the clipboard really changed.
+    #[test]
+    fn clipboard_clears_do_not_seed_bridge_records() {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        conn.execute_batch(
+            "CREATE TABLE events (
+                 id INTEGER PRIMARY KEY,
+                 session_id INTEGER NOT NULL,
+                 seq INTEGER NOT NULL,
+                 ts INTEGER NOT NULL,
+                 kind TEXT NOT NULL,
+                 exe TEXT,
+                 mod_ctrl INTEGER NOT NULL DEFAULT 0,
+                 payload TEXT NOT NULL DEFAULT '{}'
+             );
+             INSERT INTO events (session_id, seq, ts, kind, exe, mod_ctrl, payload) VALUES
+                 (1, 1, 1000, 'focus_changed', 'editor.exe', 0, '{}'),
+                 (1, 2, 2000, 'clipboard_used', NULL, 0, '{\"format_kind\":\"empty\"}'),
+                 (1, 3, 3000, 'focus_changed', 'browser.exe', 0, '{}'),
+                 (1, 4, 4000, 'key', 'browser.exe', 1, '{}'),
+                 (2, 1, 1000, 'focus_changed', 'editor.exe', 0, '{}'),
+                 (2, 2, 2000, 'clipboard_used', NULL, 0, '{\"format_kind\":\"unavailable\"}'),
+                 (2, 3, 3000, 'focus_changed', 'browser.exe', 0, '{}'),
+                 (2, 4, 4000, 'key', 'browser.exe', 1, '{}');",
+        )
+        .expect("bridge fixture");
+
+        let scope = Scope {
+            cutoff_ms: None,
+            session_id: None,
+        };
+        let records = clipboard_bridge_records(&conn, &scope).expect("bridge records read");
+
+        assert_eq!(
+            records.len(),
+            1,
+            "only the real copy mints a record: {records:?}"
+        );
+        assert_eq!(records[0].session_id, 2);
+        assert_eq!(records[0].source, "editor.exe");
+        assert_eq!(records[0].destination, "browser.exe");
     }
 
     fn health_fixture_db() -> Connection {

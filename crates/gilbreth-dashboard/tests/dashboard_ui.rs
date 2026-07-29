@@ -4360,6 +4360,45 @@ fn diagnostics_capture_warnings_still_render_red_findings() {
     harness.get_by_label("2 sessions are open at once.");
 }
 
+/// The filter captions track their guards: with the sustained names
+/// cleared the figures still render and the sustained caption disappears;
+/// with no churn report at all, no filter caption renders.
+#[test]
+fn diagnostics_churn_captions_follow_their_guards() {
+    use gilbreth_dashboard::tabs::diagnostics as tab;
+    let writes: SharedWrites = Arc::default();
+    let mut snapshot = diagnostics_snapshot_rich();
+    snapshot.churn.as_mut().unwrap().sustained_exes.clear();
+    let mut harness = diagnostics_harness(snapshot, writes.clone());
+    harness.get_by_label("Capture details").click();
+    harness.run();
+    harness.get_by_label(
+        "Background-process filter: 8,432 routine transitions in the last 7 days counted \
+         instead of stored (61 summary rows).",
+    );
+    assert!(
+        harness
+            .query_by_label_contains("Sustained same-name churn")
+            .is_none(),
+        "a quiet machine renders no sustained caption, empty-join included"
+    );
+
+    let mut snapshot = diagnostics_snapshot_rich();
+    snapshot.churn = None;
+    let mut harness = diagnostics_harness(snapshot, writes);
+    harness.get_by_label("Capture details").click();
+    harness.run();
+    assert!(
+        harness
+            .query_by_label_contains("Background-process filter:")
+            .is_none(),
+        "no churn report means no filter captions at all"
+    );
+    assert!(harness
+        .query_by_label(tab::FILTER_EXPLAINER_CAPTION)
+        .is_none());
+}
+
 #[test]
 fn diagnostics_review_verdict_names_its_reasons() {
     let writes: SharedWrites = Arc::default();
