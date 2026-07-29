@@ -223,9 +223,13 @@ struct Finding {
     evidence: Option<String>,
 }
 
-/// The findings the verdict counts: capture warnings and sustained process
-/// churn. Section-level states (permissions, archives, autostart) carry
-/// their own summaries instead — severity lives here, calm lives there.
+/// The findings the verdict counts: capture warnings. Section-level states
+/// (permissions, archives, autostart) carry their own summaries instead —
+/// severity lives here, calm lives there. Sustained process churn was
+/// demoted out of the findings 2026-07-28: the observation day showed the
+/// flag chronic on developer machines (shell and build tooling trips any
+/// rate threshold a real restart loop would), so it reads as a named known
+/// category in the capture details, not an alarm.
 fn collect_findings(snapshot: &DiagnosticsSnapshot) -> Vec<Finding> {
     let mut findings = Vec::new();
     if let Some(debug) = &snapshot.debug {
@@ -234,33 +238,6 @@ fn collect_findings(snapshot: &DiagnosticsSnapshot) -> Vec<Finding> {
                 lead: warning.clone(),
                 body: None,
                 evidence: None,
-            });
-        }
-    }
-    if let Some(churn) = &snapshot.churn {
-        if churn.dropped > 0 && !churn.sustained_exes.is_empty() {
-            let churners = churn
-                .top
-                .iter()
-                .map(|row| format!("{} ({})", row.exe, thousands(row.dropped)))
-                .collect::<Vec<_>>()
-                .join(", ");
-            findings.push(Finding {
-                lead: format!(
-                    "Sustained process churn: {}.",
-                    churn.sustained_exes.join(", ")
-                ),
-                body: Some(
-                    "A program restarting this often can point at a crash loop or a runaway \
-                     updater."
-                        .to_string(),
-                ),
-                evidence: Some(format!(
-                    "The filter kept the evidence: {} routine transitions in 7 days counted \
-                     instead of stored ({} summary rows); biggest churners: {churners}.",
-                    thousands(churn.dropped),
-                    churn.summaries
-                )),
             });
         }
     }
@@ -1026,9 +1003,10 @@ fn capture_detail_section(
                 caption(ui, DROPPED_BEFORE_WRITE_CAPTION);
             }
             if let Some(churn) = churn {
-                // The sustained-churn flag row carries these figures when it is
-                // up; this section carries them when the filter worked quietly.
-                if churn.dropped > 0 && churn.sustained_exes.is_empty() {
+                // The filter's whole story lives here since the 2026-07-28
+                // demotion: figures, biggest churners, and the sustained
+                // names as a known category rather than a verdict finding.
+                if churn.dropped > 0 {
                     caption(
                         ui,
                         &format!(
@@ -1047,8 +1025,16 @@ fn capture_detail_section(
                             .join(", ");
                         caption(ui, &format!("Biggest background churners: {top_text}."));
                     }
-                }
-                if churn.dropped > 0 {
+                    if !churn.sustained_exes.is_empty() {
+                        caption(
+                            ui,
+                            &format!(
+                                "Sustained same-name churn: {} (relaunching heavily; a crash \
+                                 loop and a busy build or shell tool look the same here).",
+                                churn.sustained_exes.join(", ")
+                            ),
+                        );
+                    }
                     caption(ui, FILTER_EXPLAINER_CAPTION);
                 }
             }

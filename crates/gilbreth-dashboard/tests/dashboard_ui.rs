@@ -4239,21 +4239,16 @@ fn diagnostics_renders_health_recorder_mix_and_install() {
     use gilbreth_dashboard::tabs::diagnostics as tab;
     let writes: SharedWrites = Arc::default();
     let mut harness = diagnostics_harness(diagnostics_snapshot_rich(), writes);
-    // The verdict band: PASS chip, owner-worded product voice counting the
-    // one finding (the churn flag), and the method sub-line.
+    // The verdict band: PASS chip, the plain healthy sentence (sustained
+    // churn was demoted out of the findings 2026-07-28 — the fixture's
+    // sustained updater.exe now reads as a known category in the capture
+    // details, not a red flag), and the method sub-line.
     harness.get_by_label("PASS");
-    harness.get_by_label("All checks healthy — one thing worth a look below.");
+    harness.get_by_label(tab::ALL_CHECKS_HEALTHY);
     harness.get_by_label(tab::VERDICT_METHOD_CAPTION);
-    // The finding renders as a red-pencil flag row with its evidence.
-    harness.get_by_label("⚑");
-    harness.get_by_label("Sustained process churn: updater.exe.");
-    harness.get_by_label(
-        "A program restarting this often can point at a crash loop or a runaway updater.",
-    );
-    harness.get_by_label(
-        "The filter kept the evidence: 8,432 routine transitions in 7 days counted instead \
-         of stored (61 summary rows); biggest churners: updater.exe (5,120), helper.exe \
-         (3,312).",
+    assert!(
+        harness.query_by_label("⚑").is_none(),
+        "sustained churn no longer raises a red-pencil flag row"
     );
     // One gauge grid, Capture vocabulary, no hover-help glyphs anywhere
     // (ⓘ retired with the redesign).
@@ -4300,6 +4295,18 @@ fn diagnostics_renders_health_recorder_mix_and_install() {
     harness.get_by_label("2026-07-09 06:12:03");
     harness.get_by_label("studio.exe • studio.exe");
     harness.get_by_label("12 rows (your settings working)");
+    // The demoted churn story: figures, biggest churners, and the sustained
+    // known category all live behind the details header now.
+    harness.get_by_label(
+        "Background-process filter: 8,432 routine transitions in the last 7 days counted \
+         instead of stored (61 summary rows).",
+    );
+    harness.get_by_label("Biggest background churners: updater.exe (5,120), helper.exe (3,312).");
+    harness.get_by_label(
+        "Sustained same-name churn: updater.exe (relaunching heavily; a crash loop and a \
+         busy build or shell tool look the same here).",
+    );
+    harness.get_by_label(tab::FILTER_EXPLAINER_CAPTION);
     // Privacy & controls: the Phase 6 facts stay visible and pinned.
     harness.get_by_label("Privacy & controls");
     harness
@@ -4333,27 +4340,24 @@ fn diagnostics_renders_health_recorder_mix_and_install() {
     );
 }
 
-/// The empty-findings state renders zero red pencil: no flag glyph, no
-/// flag rows, and the verdict reads the plain healthy sentence.
+/// Capture warnings remain the findings source after the churn demotion:
+/// one warning renders the flag glyph, the flag row, and the worth-a-look
+/// verdict sentence (the rich fixture alone renders none of them).
 #[test]
-fn diagnostics_zero_findings_renders_no_red() {
-    use gilbreth_dashboard::tabs::diagnostics as tab;
+fn diagnostics_capture_warnings_still_render_red_findings() {
     let writes: SharedWrites = Arc::default();
     let mut snapshot = diagnostics_snapshot_rich();
-    snapshot.churn.as_mut().unwrap().sustained_exes.clear();
+    snapshot
+        .debug
+        .as_mut()
+        .unwrap()
+        .warnings
+        .push("2 sessions are open at once.".to_string());
     let harness = diagnostics_harness(snapshot, writes);
     harness.get_by_label("PASS");
-    harness.get_by_label(tab::ALL_CHECKS_HEALTHY);
-    assert!(
-        harness.query_by_label("⚑").is_none(),
-        "no findings means no flag rows and no red on the page"
-    );
-    assert!(
-        harness
-            .query_by_label("All checks healthy — one thing worth a look below.")
-            .is_none(),
-        "the worth-a-look sentence appears only with findings"
-    );
+    harness.get_by_label("All checks healthy — one thing worth a look below.");
+    harness.get_by_label("⚑");
+    harness.get_by_label("2 sessions are open at once.");
 }
 
 #[test]
