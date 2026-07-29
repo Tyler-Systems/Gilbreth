@@ -19,7 +19,7 @@ use egui::{FontId, RichText};
 use gilbreth_read::{select_pattern_display_default, PatternCandidate, WorkEpisode};
 
 use super::widgets::{
-    self, accent_card, bullet_list, caption, data_table, family_chip, gauge_tiles, info_box,
+    self, accent_card, bullet_list, caption, data_table, gauge_tiles, info_box,
     patterns_empty_caption, secnote, section_kicker, summary_section, takeaway,
 };
 use crate::data::{AnalyticsData, AnalyticsSnapshot, ScopeKey};
@@ -751,9 +751,18 @@ fn input_load_section(ui: &mut egui::Ui, data: &AnalyticsData) {
         return;
     }
     if let Some(per_day) = exposure.active_input_minutes_per_day {
+        // The band arms carry their own scope note since the face caption
+        // retired (pass review F3): a band assignment must never render
+        // without the population-context boundary visible somewhere.
         let band_phrase = match exposure.day_band.as_deref() {
-            Some("high") => ", in the high population band (over 6h per day)",
-            Some("elevated") => ", in the elevated population band (over 4h per day)",
+            Some("high") => {
+                ", in the high population band (over 6h per day; population context, \
+                 not a personal score)"
+            }
+            Some("elevated") => {
+                ", in the elevated population band (over 4h per day; population \
+                 context, not a personal score)"
+            }
             Some("normal") => ", below the 4h per day population band",
             _ => "",
         };
@@ -951,7 +960,7 @@ fn episodes_section(
         None => &data.spheres.episodes,
     };
     let mut longest: Vec<&gilbreth_read::WorkEpisode> = episodes.iter().collect();
-    longest.sort_by(|left, right| right.active_ms.cmp(&left.active_ms));
+    longest.sort_by_key(|episode| std::cmp::Reverse(episode.active_ms));
     longest.truncate(5);
     if !longest.is_empty() {
         ui.add_space(4.0);

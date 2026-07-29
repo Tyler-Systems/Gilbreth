@@ -240,8 +240,8 @@ cargo run -p gilbreth-app
 # Run the same native dashboard process the tray launches.
 cargo run -p gilbreth-app -- --dashboard
 
-# Verifier-host tooling (required when operational/release checks are routed;
-# never a product/runtime dependency)
+# Verifier-host tooling (Python 3.11+; required when operational/release
+# checks are routed; never a product/runtime dependency)
 python -m pip install -r scripts/requirements-dev.txt
 python -m pytest scripts/tests -q
 python scripts/review_run.py

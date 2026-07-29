@@ -15,21 +15,20 @@ use std::time::Duration;
 
 use gilbreth_read::{
     active_focus_minutes_total, daily_active_minutes, database_health, day_strip,
-    focus_minutes_total, focus_rollup, fragmentation_metrics, hourly_input_pulse,
-    input_exposure_metrics, input_rollup, interruption_costs, live_sphere_tokens, open_readonly,
-    pattern_history_days, patterns_worth_reviewing, read_activity_events, read_database_counts,
+    focus_minutes_total, focus_rollup, hourly_input_pulse, input_rollup, live_sphere_tokens,
+    open_readonly, pattern_history_days, read_activity_events, read_database_counts,
     read_debug_log, read_event_counts, read_focus_summary, read_power_events, read_process_churn,
     read_recording_export_steps, read_recording_steps, read_recordings,
     read_session_active_focus_seconds_total, read_session_focus_seconds_total, read_sessions,
-    read_system_events, recording_replay_verdict, rhythm_metrics, session_analytics,
-    session_story_totals, today_story, weekly_digest, window_lifecycle_rollup,
-    working_spheres_overlay, working_spheres_skeleton, ActivityEventRow, DatabaseCounts,
-    DatabaseHealth, DayActive, DayStrip, DebugLogSnapshot, DiscoveryNotice, DiscoveryNoticeState,
-    EventCountRow, FocusRollupRow, FocusSummaryRow, FragmentationMetrics, HourPulse,
-    InputExposureMetrics, InputRollupRow, InstallStateSnapshot, InterruptionCosts,
-    PatternCandidate, PowerEventRow, ProcessChurnReport, RecordingRow, RecordingStep,
-    ReplayExportVerdict, RhythmMetrics, Scope, SessionAnalyticsRow, SessionRow, SessionStoryTotals,
-    SphereOverlay, SphereSkeleton, SystemEventRow, TodayStory, WeeklyDigest, WindowLifecycleRow,
+    read_system_events, recording_replay_verdict, session_analytics, session_story_totals,
+    today_story, weekly_digest, window_lifecycle_rollup, working_spheres_overlay,
+    working_spheres_skeleton, ActivityEventRow, DatabaseCounts, DatabaseHealth, DayActive,
+    DayStrip, DebugLogSnapshot, DiscoveryNotice, DiscoveryNoticeState, EventCountRow,
+    FocusRollupRow, FocusSummaryRow, FragmentationMetrics, HourPulse, InputExposureMetrics,
+    InputRollupRow, InstallStateSnapshot, InterruptionCosts, PatternCandidate, PowerEventRow,
+    ProcessChurnReport, RecordingRow, RecordingStep, ReplayExportVerdict, RhythmMetrics, Scope,
+    SessionAnalyticsRow, SessionRow, SessionStoryTotals, SphereOverlay, SphereSkeleton,
+    SystemEventRow, TodayStory, WeeklyDigest, WindowLifecycleRow,
 };
 
 /// Whether this viewer owns the one durable eframe UI-state writer claim.

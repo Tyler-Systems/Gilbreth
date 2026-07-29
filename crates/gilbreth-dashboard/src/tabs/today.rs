@@ -18,8 +18,8 @@ use gilbreth_read::{DiscoveryNotice, DiscoveryNoticeEvidence};
 
 pub use super::widgets::patterns_empty_caption;
 use super::widgets::{
-    self, accent_card, caption, family_chip, opening_section_kicker, secnote, section_kicker,
-    summary_section, takeaway,
+    self, accent_card, caption, opening_section_kicker, secnote, section_kicker, summary_section,
+    takeaway,
 };
 use crate::charts;
 use crate::data::TodaySnapshot;
@@ -68,8 +68,13 @@ pub const EMPTY_LEAN_CAPTURE_LINE: &str =
 pub const EMPTY_FULL_CAPTURE_LINE: &str = "Configured key-content setting: on (opt-in). Changes \
      take effect the next time Gilbreth starts; on stores typed key names.";
 pub const DATABASE_LABEL: &str = "DATABASE";
+// Narrowed per heartbeat decision 7 (live-verified 2026-07-28): the open
+// interval feeds Today within one 30 s beat, so the old "once you first
+// switch away" claim is obsolete — this caption now covers only the
+// genuinely-empty moments (capture just started, the Foreground stream
+// off, a gated session).
 pub const FRESH_START_CAPTION: &str =
-    "Active time and top app fill in once you first switch away from the app you started in.";
+    "Active time and top app appear within about half a minute of capture seeing a focus.";
 pub const CONTENT_CAPTURE_WARNING: &str = "Typed key content is stored. Full capture is enabled \
      (opt-in). Turn it off under tray > Privacy > Store typed key content.";
 /// The capture posture as visible copy (C-ledger, matching Session).

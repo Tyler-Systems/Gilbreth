@@ -4080,10 +4080,12 @@ fn time_anchor_notices(conn: &Connection, now_ms: i64) -> rusqlite::Result<Vec<D
     });
     let mut notices = Vec::new();
     for row in windows {
-        let baseline = format!(
-            "Three-quarters of recent days stay within {:.1} {} in this hour.",
-            row.baseline, row.unit
-        );
+        // "Recent baseline" stays deliberately unspecific: the four window
+        // builders derive it differently (pooled hour cells, per-hour
+        // medians, per-hour counts), so a per-day or per-hour population
+        // claim would overstate what any of them computes (the pass
+        // review's F2 — the round-4 overclaim family).
+        let baseline = format!("Recent baseline: {:.1} {}.", row.baseline, row.unit);
         let mut evidence = DiscoveryNoticeEvidence::at(today_start + (row.hour * 3_600_000));
         evidence.duration_ms = Some(3_600_000);
         evidence.rate = Some(row.value);

@@ -16,8 +16,8 @@ use egui::{FontId, RichText};
 use gilbreth_read::{PatternCandidate, WeeklyDigest};
 
 use super::widgets::{
-    self, accent_card, caption, card_frame, family_chip, opening_section_kicker,
-    patterns_empty_caption, secnote, section_kicker, summary_section, takeaway, ShareBarRow,
+    self, accent_card, caption, card_frame, opening_section_kicker, patterns_empty_caption,
+    secnote, section_kicker, summary_section, takeaway, ShareBarRow,
 };
 use crate::charts;
 use crate::data::WeekSnapshot;
@@ -200,8 +200,8 @@ pub fn show(ui: &mut egui::Ui, snapshot: &WeekSnapshot) {
             } else {
                 "Quieter:"
             };
-            // Body-size like the section captions around it ("The apps you
-            // open first…"), not takeaway-size — the 2026-07-28 UI/UX pass.
+            // Quieter than the 15.0 takeaways per the 2026-07-28 walk;
+            // 13.0 sits between secnote (14.0) and caption (11.5).
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
                 ui.label(
@@ -356,30 +356,25 @@ fn pulls_you_back(ui: &mut egui::Ui, digest: &WeeklyDigest) {
 /// edge. Read-only: the record flow stays Analytics-only.
 fn friction_card(ui: &mut egui::Ui, candidate: &PatternCandidate) {
     accent_card(ui, |ui| {
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing.x = 8.0;
-            ui.label(
-                RichText::new(&candidate.title)
-                    .color(theme::SILVER)
-                    .font(theme::heading_card()),
-            );
-            family_chip(
-                ui,
-                &widgets::candidate_kind_label(&candidate.kind).to_uppercase(),
-            );
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(
-                    RichText::new(format!(
-                        "signal {} • events {} • recurs {}",
-                        candidate.band,
-                        thousands(candidate.support_count),
-                        thousands(candidate.support_sessions.max(candidate.support_days))
-                    ))
-                    .color(theme::GRAY)
-                    .font(FontId::new(11.5, egui::FontFamily::Monospace)),
-                );
-            });
-        });
+        widgets::card_title_row(
+            ui,
+            &candidate.title,
+            &widgets::candidate_kind_label(&candidate.kind).to_uppercase(),
+            |ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(
+                        RichText::new(format!(
+                            "signal {} • events {} • recurs {}",
+                            candidate.band,
+                            thousands(candidate.support_count),
+                            thousands(candidate.support_sessions.max(candidate.support_days))
+                        ))
+                        .color(theme::GRAY)
+                        .font(FontId::new(11.5, egui::FontFamily::Monospace)),
+                    );
+                });
+            },
+        );
         ui.label(
             RichText::new(&candidate.evidence)
                 .color(theme::SILVER_DIM)

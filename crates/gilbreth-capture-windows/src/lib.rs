@@ -680,9 +680,12 @@ const SYSTEM_WINDOW_CLASS: windows::core::PCWSTR = w!("GilbrethSystemWindow");
 /// sanctioned scripted stop — observed live 2026-07-28, taskkill's polite
 /// path delivers WM_CLOSE to the tray host window instead (ghosting the
 /// icon while capture keeps running) and never reaches this one. Returns
-/// true when a window acknowledged the post; false when no instance is
-/// running. Never call this from tests: FindWindowW searches the whole
-/// desktop, so a test would find and quit the developer's live instance.
+/// true when the quit request was POSTED to a found window — the flush
+/// completes asynchronously, so a caller that touches the database next
+/// must poll for process exit first; false when no window was found on
+/// this desktop. Never call this from tests: FindWindowW searches the
+/// whole desktop, so a test would find and quit the developer's live
+/// instance.
 pub fn request_running_instance_quit() -> bool {
     use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, PostMessageW};
     unsafe {
@@ -5104,7 +5107,9 @@ mod tests {
     /// posts WM_QUIT to the calling thread's queue and reports the message
     /// handled, so the hidden window survives for the pump's post-loop
     /// flush instead of being destroyed under a half-alive app (the
-    /// 2026-07-28 ghost-tray observation).
+    /// 2026-07-28 ghost-tray observation). Assumes libtest's default
+    /// thread-per-test model: the posted WM_QUIT lands on this test's own
+    /// thread queue and is removed before the test ends.
     #[test]
     fn wm_close_routes_to_the_quit_path_and_stays_handled() {
         use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
