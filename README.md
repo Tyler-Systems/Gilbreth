@@ -8,9 +8,9 @@
 
 <p align="center"><strong>Download:</strong></p>
 
-<p align="center"><a href="https://github.com/Tyler-Systems/Gilbreth/releases/latest"><img src="https://img.shields.io/github/v/release/Tyler-Systems/Gilbreth?label=download%20for%20Windows%2011&labelColor=15171B&color=F2A33C&style=for-the-badge" alt="Download for Windows 11"></a> <img src="https://img.shields.io/badge/status-preview-yellow?style=for-the-badge&labelColor=15171B" alt="Status: preview"></p>
+<p align="center"><a href="https://github.com/Tyler-Systems/Gilbreth/releases/download/v0.1.2/Gilbreth-0.1.2-windows-x64-setup.exe"><img src="https://img.shields.io/github/v/release/Tyler-Systems/Gilbreth?label=download%20for%20Windows%2011&labelColor=15171B&color=F2A33C&style=for-the-badge" alt="Download for Windows 11"></a> <img src="https://img.shields.io/badge/status-preview-yellow?style=for-the-badge&labelColor=15171B" alt="Status: preview"></p>
 
-<p align="center"><sub>The release page carries the installer, manifest, and checksums; <a href="docs/VERIFY.md">docs/VERIFY.md</a> shows how to check all three.</sub></p>
+<p align="center"><sub>The button downloads the signed installer; the <a href="https://github.com/Tyler-Systems/Gilbreth/releases/latest">release page</a> carries its manifest and checksums, and <a href="docs/VERIFY.md">docs/VERIFY.md</a> shows how to check all three.</sub></p>
 
 <p align="center"><strong>Badges:</strong></p>
 
@@ -35,9 +35,10 @@ no outbound network calls, no telemetry, no account.
 
 ## Download
 
-**[Gilbreth v0.1.1 for Windows 11 (x64)](https://github.com/Tyler-Systems/Gilbreth/releases/latest)**
-is the current release, an early preview. Each release is a signed installer
-alongside `release-manifest.json` and `SHA256SUMS.txt`;
+**[Gilbreth v0.1.2 for Windows 11 (x64)](https://github.com/Tyler-Systems/Gilbreth/releases/download/v0.1.2/Gilbreth-0.1.2-windows-x64-setup.exe)**
+is the current release, an early preview; the link downloads the signed
+installer. The [release page](https://github.com/Tyler-Systems/Gilbreth/releases/latest)
+carries it alongside `release-manifest.json` and `SHA256SUMS.txt`;
 **[docs/VERIFY.md](docs/VERIFY.md)** shows how to check all three before you
 run Setup. Windows SmartScreen may warn while the signing certificate is new.
 

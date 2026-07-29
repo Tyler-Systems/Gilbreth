@@ -85,12 +85,18 @@ secret material.
 8. **Verify as a stranger.** Without private-repository access, download every
    published set, follow [VERIFY.md](VERIFY.md), and exercise the applicable
    clean install/update/uninstall path.
-9. **Update the website.** `gilbreth.tylersystems.com` states the released
-   version in several places: `index.html` (the hero note, the "Where we are"
-   section, the FAQ answer, and the JSON-LD `softwareVersion`) and
-   `thanks.html` (the download link label). The site source is maintained
-   outside this repository; bump every version string and redeploy it when
-   the release publishes.
+9. **Update the README and the website.** Both link the installer asset
+   directly, so each release must re-point them. `README.md` states the
+   version and the direct download URL twice (the masthead badge link and
+   the Download section); commit that bump to `main` once the release is
+   published. `gilbreth.tylersystems.com` states the released version in
+   several places: `index.html` (the hero note, the "Where we are" section,
+   the FAQ answer, the JSON-LD `softwareVersion` and `downloadUrl`, and the
+   direct-asset `href` on all three Download buttons — hero, status, and
+   closer) and `thanks.html` (the download link label and its direct-asset
+   `href`). The site source is maintained outside this repository; bump
+   every version string and `href` and redeploy it when the release
+   publishes.
 10. **Dogfood and fix forward.** Normal use is the soak. Correct a defect in a
     new version; do not silently replace assets under an existing version. A
     truly unusable release may be marked pre-release or withdrawn with a plain
