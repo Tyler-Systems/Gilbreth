@@ -107,10 +107,10 @@ use windows::{
                 RI_MOUSE_WHEEL, SM_CXDOUBLECLK, SM_CXDRAG, SM_CXVIRTUALSCREEN, SM_CYDOUBLECLK,
                 SM_CYDRAG, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
                 SYSTEM_METRICS_INDEX, WINDOW_EX_STYLE, WINDOW_STYLE, WINEVENT_OUTOFCONTEXT,
-                WM_CLIPBOARDUPDATE, WM_DISPLAYCHANGE, WM_ENDSESSION, WM_INPUT, WM_POWERBROADCAST,
-                WM_QUERYENDSESSION, WM_TIMER, WM_WTSSESSION_CHANGE, WNDCLASSW, WTS_CONSOLE_CONNECT,
-                WTS_CONSOLE_DISCONNECT, WTS_REMOTE_CONNECT, WTS_REMOTE_DISCONNECT,
-                WTS_SESSION_LOCK, WTS_SESSION_UNLOCK,
+                WM_CLIPBOARDUPDATE, WM_CLOSE, WM_DISPLAYCHANGE, WM_ENDSESSION, WM_INPUT,
+                WM_POWERBROADCAST, WM_QUERYENDSESSION, WM_TIMER, WM_WTSSESSION_CHANGE, WNDCLASSW,
+                WTS_CONSOLE_CONNECT, WTS_CONSOLE_DISCONNECT, WTS_REMOTE_CONNECT,
+                WTS_REMOTE_DISCONNECT, WTS_SESSION_LOCK, WTS_SESSION_UNLOCK,
             },
         },
     },
@@ -4280,6 +4280,19 @@ unsafe extern "system" fn system_wnd_proc(
                 state.on_display_change();
             }
         });
+    } else if msg == WM_CLOSE {
+        // Every realistic sender of WM_CLOSE to this hidden window —
+        // taskkill without /F, Task Manager's polite path, installer and
+        // updater close requests — means "exit gracefully", so it routes
+        // to the same quit path as WM_ENDSESSION. Returning handled (not
+        // DefWindowProc) keeps the window alive for the pump's post-loop
+        // flush; the default would destroy just the window and leave a
+        // half-dead app (the 2026-07-28 ghost-tray observation).
+        info!("close requested on the capture window; stopping capture pump");
+        unsafe {
+            PostQuitMessage(0);
+        }
+        return LRESULT(0);
     } else if msg == WM_QUERYENDSESSION {
         info!("windows session end requested; allowing shutdown");
         return LRESULT(1);
@@ -5059,6 +5072,32 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use gilbreth_core::EventPayload;
+
+    /// WM_CLOSE routes to the same quit path as WM_ENDSESSION: the proc
+    /// posts WM_QUIT to the calling thread's queue and reports the message
+    /// handled, so the hidden window survives for the pump's post-loop
+    /// flush instead of being destroyed under a half-alive app (the
+    /// 2026-07-28 ghost-tray observation).
+    #[test]
+    fn wm_close_routes_to_the_quit_path_and_stays_handled() {
+        use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+        use windows::Win32::UI::WindowsAndMessaging::{
+            PeekMessageW, MSG, PM_REMOVE, WM_CLOSE, WM_QUIT,
+        };
+
+        let result = unsafe {
+            super::system_wnd_proc(HWND(std::ptr::null_mut()), WM_CLOSE, WPARAM(0), LPARAM(0))
+        };
+        assert_eq!(result.0, 0, "WM_CLOSE reports handled");
+
+        let mut message = MSG::default();
+        let found = unsafe { PeekMessageW(&mut message, None, 0, 0, PM_REMOVE) };
+        assert!(
+            found.as_bool(),
+            "the quit message waits in this thread's queue"
+        );
+        assert_eq!(message.message, WM_QUIT);
+    }
 
     use super::*;
 
