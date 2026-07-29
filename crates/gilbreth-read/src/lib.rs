@@ -1345,6 +1345,29 @@ fn productive_input_map(conn: &Connection, scope: &Scope) -> rusqlite::Result<Pr
         .collect())
 }
 
+/// The focus-cost prelude three readers share — fragmentation,
+/// interruption, and the friction windows each rebuilt the same segments
+/// scan and productive-input map (the 2026-07-28 timing finding, wave
+/// two). One snapshot computes this once and threads it through the
+/// `_with` variants.
+pub struct FocusCostContext {
+    segments: Vec<AppSegment>,
+    productive_ts: ProductiveInputMap,
+}
+
+pub fn focus_cost_context(conn: &Connection, scope: &Scope) -> rusqlite::Result<FocusCostContext> {
+    let segments = active_app_focus_segments(conn, scope)?;
+    let productive_ts = if segments.is_empty() {
+        HashMap::new()
+    } else {
+        productive_input_map(conn, scope)?
+    };
+    Ok(FocusCostContext {
+        segments,
+        productive_ts,
+    })
+}
+
 fn median_i64_as_f64(values: &mut [i64]) -> Option<f64> {
     if values.is_empty() {
         return None;
@@ -1396,7 +1419,7 @@ pub fn input_runs(conn: &Connection, scope: &Scope) -> rusqlite::Result<Vec<Inpu
     Ok(input_runs_and_counts(conn, scope)?.0)
 }
 
-type InputCountsByApp = Vec<(String, HashMap<String, i64>)>;
+pub type InputCountsByApp = Vec<(String, HashMap<String, i64>)>;
 
 /// The sweep plus the per-app input-kind tally from one table scan. The
 /// separate GROUP BY pass this replaces re-paid the full input predicate
@@ -1404,7 +1427,11 @@ type InputCountsByApp = Vec<(String, HashMap<String, i64>)>;
 /// tally keeps the old pass's semantics exactly (same COALESCE exe shape,
 /// `display_app` merge, first-seen app order); only tie order among equal
 /// breakdown rows can differ, and the breakdown sorts before use.
-fn input_runs_and_counts(
+/// Public so one snapshot computes the sweep once and threads it through
+/// the `_with` reader variants — the Analytics load used to run this scan
+/// three times (exposure, candidates, friction windows; the 2026-07-28
+/// timing finding).
+pub fn input_runs_and_counts(
     conn: &Connection,
     scope: &Scope,
 ) -> rusqlite::Result<(Vec<InputRun>, InputCountsByApp)> {
@@ -1702,6 +1729,17 @@ pub fn input_exposure_metrics(
     scope: &Scope,
 ) -> rusqlite::Result<InputExposureMetrics> {
     let (runs, counts) = input_runs_and_counts(conn, scope)?;
+    input_exposure_metrics_with(conn, scope, &runs, &counts)
+}
+
+/// The shared-sweep variant: the caller supplies the one
+/// `input_runs_and_counts` result the whole snapshot shares.
+pub fn input_exposure_metrics_with(
+    conn: &Connection,
+    scope: &Scope,
+    runs: &[InputRun],
+    counts: &InputCountsByApp,
+) -> rusqlite::Result<InputExposureMetrics> {
     if runs.is_empty() {
         return Ok(empty_input_exposure_metrics());
     }
@@ -1719,7 +1757,7 @@ pub fn input_exposure_metrics(
         .iter()
         .filter(|run| run.run_ms >= INPUT_EXPOSURE_BREAK_TARGET_MS)
         .count() as i64;
-    let (per_app, per_day, total_ms) = input_active_by_app_and_day(&runs, &focus);
+    let (per_app, per_day, total_ms) = input_active_by_app_and_day(runs, &focus);
     let active_days = per_day.len() as f64;
     let per_day_avg_ms = (active_days > 0.0).then_some(total_ms as f64 / active_days);
     let total_active_hours = total_ms as f64 / 3_600_000.0;
@@ -1727,8 +1765,8 @@ pub fn input_exposure_metrics(
         (total_active_hours > 0.0).then_some(round_1dp(total_events as f64 / total_active_hours));
 
     let mut breakdown: Vec<InputExposureBreakdown> = Vec::new();
-    for (app, bucket) in counts {
-        let app_ms = per_app.get(&app).copied().unwrap_or(0);
+    for (app, bucket) in counts.iter() {
+        let app_ms = per_app.get(app).copied().unwrap_or(0);
         let app_hours = app_ms as f64 / 3_600_000.0;
         let show_rate = app_ms >= INPUT_EXPOSURE_RATE_MIN_ACTIVE_MS && app_hours > 0.0;
         let rate = |kind: &str| {
@@ -1737,7 +1775,7 @@ pub fn input_exposure_metrics(
             ))
         };
         breakdown.push(InputExposureBreakdown {
-            app,
+            app: app.clone(),
             active_input_minutes: round_2dp(app_ms as f64 / 60_000.0),
             keystrokes_per_hour: rate("key"),
             clicks_per_hour: rate("mouse_click"),
@@ -1917,29 +1955,36 @@ type SessionSeqItems = HashMap<i64, (Vec<i64>, Vec<(i64, String)>)>;
 
 /// Mirrors `read_interruption_costs`.
 pub fn interruption_costs(conn: &Connection, scope: &Scope) -> rusqlite::Result<InterruptionCosts> {
-    let segments = active_app_focus_segments(conn, scope)?;
+    let context = focus_cost_context(conn, scope)?;
+    Ok(interruption_costs_with(&context))
+}
+
+/// The shared-prelude variant: the caller supplies the one
+/// [`FocusCostContext`] the whole snapshot shares.
+pub fn interruption_costs_with(context: &FocusCostContext) -> InterruptionCosts {
+    let segments = &context.segments;
     if segments.is_empty() {
-        return Ok(InterruptionCosts {
+        return InterruptionCosts {
             total_roundtrips: 0,
             measured_restarts: 0,
             median_restart_seconds: None,
             estimated_restart_minutes: None,
             total_away_minutes: 0.0,
             pairs: Vec::new(),
-        });
+        };
     }
-    let productive_ts = productive_input_map(conn, scope)?;
-    let runs = same_app_focus_runs(&segments);
-    let records = diversion_cost_records(&runs, &productive_ts);
+    let productive_ts = &context.productive_ts;
+    let runs = same_app_focus_runs(segments);
+    let records = diversion_cost_records(&runs, productive_ts);
     if records.is_empty() {
-        return Ok(InterruptionCosts {
+        return InterruptionCosts {
             total_roundtrips: 0,
             measured_restarts: 0,
             median_restart_seconds: None,
             estimated_restart_minutes: None,
             total_away_minutes: 0.0,
             pairs: Vec::new(),
-        });
+        };
     }
 
     let restarts: Vec<i64> = records
@@ -1998,7 +2043,7 @@ pub fn interruption_costs(conn: &Connection, scope: &Scope) -> rusqlite::Result<
     let overall_median = (restarts.len() >= RESUMPTION_LAG_MIN_SAMPLES)
         .then(|| median_seconds(&restarts))
         .flatten();
-    Ok(InterruptionCosts {
+    InterruptionCosts {
         total_roundtrips: records.len() as i64,
         measured_restarts: restarts.len() as i64,
         median_restart_seconds: overall_median,
@@ -2006,7 +2051,7 @@ pub fn interruption_costs(conn: &Connection, scope: &Scope) -> rusqlite::Result<
             .map(|seconds| round_2dp(seconds * records.len() as f64 / 60.0)),
         total_away_minutes: round_2dp(total_away_ms as f64 / 60_000.0),
         pairs,
-    })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -2524,30 +2569,41 @@ pub fn time_of_day_friction_windows(
     scope: &Scope,
     now_ms: i64,
 ) -> rusqlite::Result<Vec<FrictionWindow>> {
+    let shared_runs = input_runs(conn, scope)?;
+    let context = focus_cost_context(conn, scope)?;
+    time_of_day_friction_windows_with(conn, scope, now_ms, &shared_runs, &context)
+}
+
+/// The shared-sweep variant: the caller supplies the one input-run sweep
+/// and the one [`FocusCostContext`] the whole snapshot shares (the
+/// 2026-07-28 timing finding: this reader re-ran both the full input
+/// sweep and the segments prelude other readers had already paid for).
+pub fn time_of_day_friction_windows_with(
+    conn: &Connection,
+    scope: &Scope,
+    now_ms: i64,
+    input_runs: &[InputRun],
+    context: &FocusCostContext,
+) -> rusqlite::Result<Vec<FrictionWindow>> {
     let today_key = local_date(local_day_start_ms(now_ms));
-    let segments = active_app_focus_segments(conn, scope)?;
-    let productive_ts = if segments.is_empty() {
-        HashMap::new()
-    } else {
-        productive_input_map(conn, scope)?
-    };
+    let segments = &context.segments;
+    let productive_ts = &context.productive_ts;
     let runs = if segments.is_empty() {
         Vec::new()
     } else {
-        same_app_focus_runs(&segments)
+        same_app_focus_runs(segments)
     };
     let records = if runs.is_empty() {
         Vec::new()
     } else {
-        diversion_cost_records(&runs, &productive_ts)
+        diversion_cost_records(&runs, productive_ts)
     };
-    let input_runs = input_runs(conn, scope)?;
     let ramp = ramp_records(conn, scope)?;
 
     let mut rows = Vec::new();
-    add_switch_rate_windows(&mut rows, &segments, &today_key);
+    add_switch_rate_windows(&mut rows, segments, &today_key);
     add_return_toll_windows(&mut rows, &records, &today_key);
-    add_input_dense_windows(&mut rows, &input_runs, &today_key);
+    add_input_dense_windows(&mut rows, input_runs, &today_key);
     add_ramp_windows(&mut rows, &ramp, &today_key);
     rows.sort_by(|left, right| {
         right
@@ -5909,11 +5965,18 @@ pub fn fragmentation_metrics(
     conn: &Connection,
     scope: &Scope,
 ) -> rusqlite::Result<FragmentationMetrics> {
-    let segments = active_app_focus_segments(conn, scope)?;
+    let context = focus_cost_context(conn, scope)?;
+    Ok(fragmentation_metrics_with(&context))
+}
+
+/// The shared-prelude variant: the caller supplies the one
+/// [`FocusCostContext`] the whole snapshot shares.
+pub fn fragmentation_metrics_with(context: &FocusCostContext) -> FragmentationMetrics {
+    let segments = &context.segments;
     if segments.is_empty() {
-        return Ok(empty_fragmentation_metrics());
+        return empty_fragmentation_metrics();
     }
-    let productive_ts = productive_input_map(conn, scope)?;
+    let productive_ts = &context.productive_ts;
 
     let known_active_ms: i64 = segments
         .iter()
@@ -5921,13 +5984,13 @@ pub fn fragmentation_metrics(
         .map(|segment| segment.active_ms)
         .sum();
     if known_active_ms <= 0 {
-        return Ok(empty_fragmentation_metrics());
+        return empty_fragmentation_metrics();
     }
 
-    let runs = same_app_focus_runs(&segments);
-    let (sustained_switches, switches_by_app) = sustained_app_switches(&segments);
+    let runs = same_app_focus_runs(segments);
+    let (sustained_switches, switches_by_app) = sustained_app_switches(segments);
     let anchor_records = active_diversion_records(&runs);
-    let (resumption_overall, resumption_by_app) = resumption_lags(&runs, &productive_ts);
+    let (resumption_overall, resumption_by_app) = resumption_lags(&runs, productive_ts);
 
     let gated_anchors: HashMap<&String, &AnchorDiversions> = anchor_records
         .iter()
@@ -5939,7 +6002,7 @@ pub fn fragmentation_metrics(
     // Python's active_by_app dict: first-seen order over known segments.
     let mut active_order: Vec<(String, i64)> = Vec::new();
     let mut active_index: HashMap<String, usize> = HashMap::new();
-    for segment in &segments {
+    for segment in segments {
         if is_known_active_segment(segment) {
             bump_ordered(
                 &mut active_order,
@@ -6019,7 +6082,7 @@ pub fn fragmentation_metrics(
         .flat_map(|record| record.active_diversion_ms.iter().copied())
         .collect();
     let active_hours = known_active_ms as f64 / 3_600_000.0;
-    Ok(FragmentationMetrics {
+    FragmentationMetrics {
         active_minutes: round_2dp(known_active_ms as f64 / 60_000.0),
         same_app_focus_runs: runs.len() as i64,
         median_same_app_run_minutes: median_minutes(&all_run_ms),
@@ -6031,7 +6094,7 @@ pub fn fragmentation_metrics(
         median_active_diversion_minutes: median_minutes(&gated_diversions),
         median_resumption_lag_seconds: median_seconds(&resumption_overall),
         breakdown,
-    })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -6159,14 +6222,18 @@ fn mouse_velocities(
     scope: &Scope,
 ) -> rusqlite::Result<(Option<f64>, Option<f64>, i64)> {
     let (where_clause, params) = scope_predicate("e", scope);
+    // The LIKE guard skips one of the three per-row JSON parses for the
+    // overwhelmingly common payloads carrying no input_origin field (the
+    // sweep predicate's proven trick); the accepted set is unchanged.
     let sql = format!(
         "SELECT
              CAST(json_extract(e.payload, '$.distance_px') AS REAL) AS distance_px,
              CAST(json_extract(e.payload, '$.duration_ms') AS REAL) AS duration_ms
          FROM events e
          WHERE e.kind = 'mouse_move'
-           AND COALESCE(json_extract(e.payload, '$.input_origin'), 'local')
-               != 'remote_relay_suspected'
+           AND (e.payload NOT LIKE '%input_origin%'
+                OR COALESCE(json_extract(e.payload, '$.input_origin'), 'local')
+                    != 'remote_relay_suspected')
            AND {where_clause}"
     );
     let mut stmt = conn.prepare(&sql)?;
@@ -6220,8 +6287,23 @@ pub fn rhythm_metrics(
     scope: &Scope,
     now_ms: i64,
 ) -> rusqlite::Result<RhythmMetrics> {
+    let shared_runs = input_runs(conn, scope)?;
+    let context = focus_cost_context(conn, scope)?;
+    rhythm_metrics_with(conn, scope, now_ms, &shared_runs, &context)
+}
+
+/// The shared-sweep variant: the caller supplies the one input-run sweep
+/// and the one [`FocusCostContext`] the whole snapshot shares.
+pub fn rhythm_metrics_with(
+    conn: &Connection,
+    scope: &Scope,
+    now_ms: i64,
+    shared_runs: &[InputRun],
+    context: &FocusCostContext,
+) -> rusqlite::Result<RhythmMetrics> {
     let core = rhythm_metrics_core(conn, scope)?;
-    let friction_windows = time_of_day_friction_windows(conn, scope, now_ms)?;
+    let friction_windows =
+        time_of_day_friction_windows_with(conn, scope, now_ms, shared_runs, context)?;
     Ok(RhythmMetrics {
         heatmap: core.heatmap,
         typing_burst_wpm_median: core.typing_burst_wpm_median,
@@ -7269,24 +7351,20 @@ fn fragmentation_candidates(
     Ok(out)
 }
 
-fn input_exposure_candidates(
-    conn: &Connection,
-    scope: &Scope,
-) -> rusqlite::Result<Vec<PatternCandidate>> {
-    let runs = input_runs(conn, scope)?;
-    let long_runs: Vec<InputRun> = runs
-        .into_iter()
+fn input_exposure_candidates(runs: &[InputRun]) -> Vec<PatternCandidate> {
+    let long_runs: Vec<&InputRun> = runs
+        .iter()
         .filter(|run| run.run_ms >= INPUT_EXPOSURE_LONG_RUN_MS)
         .collect();
     if long_runs.len() < INPUT_EXPOSURE_MIN_LONG_RUNS {
-        return Ok(Vec::new());
+        return Vec::new();
     }
     let dates: HashSet<String> = long_runs
         .iter()
         .map(|run| run.start_local_date.clone())
         .collect();
     if dates.len() < SEQUENCE_MIN_DAYS {
-        return Ok(Vec::new());
+        return Vec::new();
     }
     let sessions: HashSet<i64> = long_runs.iter().map(|run| run.session_id).collect();
     let longest_ms = long_runs.iter().map(|run| run.run_ms).max().unwrap_or(0);
@@ -7318,7 +7396,7 @@ fn input_exposure_candidates(
         .collect::<Vec<_>>()
         .join(", ");
     let band = input_exposure_band(long_runs.len() as i64, dates.len() as i64, longest_ms);
-    Ok(vec![PatternCandidate {
+    vec![PatternCandidate {
         category: "input_exposure".to_string(),
         kind: CANDIDATE_KIND_INPUT_EXPOSURE.to_string(),
         dedup_apps: Vec::new(),
@@ -7337,7 +7415,7 @@ fn input_exposure_candidates(
         support_sessions: sessions.len() as i64,
         support_days: dates.len() as i64,
         sort_score: 0.0,
-    }])
+    }]
 }
 
 #[derive(Default)]
@@ -7522,12 +7600,23 @@ pub fn patterns_worth_reviewing(
     conn: &Connection,
     scope: &Scope,
 ) -> rusqlite::Result<Vec<PatternCandidate>> {
+    let runs = input_runs(conn, scope)?;
+    patterns_worth_reviewing_with(conn, scope, &runs)
+}
+
+/// The shared-sweep variant: the caller supplies the one input-run sweep
+/// the whole snapshot shares.
+pub fn patterns_worth_reviewing_with(
+    conn: &Connection,
+    scope: &Scope,
+    runs: &[InputRun],
+) -> rusqlite::Result<Vec<PatternCandidate>> {
     let mut candidates = Vec::new();
     candidates.extend(focus_churn_candidates(conn, scope)?);
     candidates.extend(window_churn_candidates(conn, scope)?);
     candidates.extend(sequence_candidates(conn, scope)?);
     candidates.extend(fragmentation_candidates(conn, scope)?);
-    candidates.extend(input_exposure_candidates(conn, scope)?);
+    candidates.extend(input_exposure_candidates(runs));
     candidates.extend(clipboard_transfer_candidates(conn, scope)?);
     rank_candidates(&mut candidates);
     Ok(cap_category_slots(dedupe_candidates(candidates)))
@@ -10768,19 +10857,26 @@ mod tests {
         time_reader!("session_analytics", session_analytics(&conn, &scope));
         time_reader!("input_rollup", input_rollup(&conn, &scope));
         time_reader!("window_lifecycle", window_lifecycle_rollup(&conn, &scope));
+        let (shared_runs, shared_counts) =
+            input_runs_and_counts(&conn, &scope).expect("shared sweep");
+        let focus_context = focus_cost_context(&conn, &scope).expect("shared focus context");
+        eprintln!("(shared sweep + focus context computed once for the _with readers below)");
         time_reader!(
             "patterns_worth_reviewing",
-            patterns_worth_reviewing(&conn, &scope)
+            patterns_worth_reviewing_with(&conn, &scope, &shared_runs)
         );
         time_reader!("pattern_history_days", pattern_history_days(&conn, &scope));
         time_reader!(
             "fragmentation_metrics",
-            fragmentation_metrics(&conn, &scope)
+            Ok::<_, rusqlite::Error>(fragmentation_metrics_with(&focus_context))
         );
-        time_reader!("interruption_costs", interruption_costs(&conn, &scope));
+        time_reader!(
+            "interruption_costs",
+            Ok::<_, rusqlite::Error>(interruption_costs_with(&focus_context))
+        );
         time_reader!(
             "input_exposure_metrics",
-            input_exposure_metrics(&conn, &scope)
+            input_exposure_metrics_with(&conn, &scope, &shared_runs, &shared_counts)
         );
         time_reader!(
             "working_spheres_skeleton",
@@ -10790,7 +10886,15 @@ mod tests {
             "working_spheres_overlay",
             working_spheres_overlay(&conn, &scope, &HashMap::new())
         );
-        time_reader!("rhythm_metrics", rhythm_metrics(&conn, &scope, now_ms));
+        time_reader!(
+            "rhythm_metrics",
+            rhythm_metrics_with(&conn, &scope, now_ms, &shared_runs, &focus_context)
+        );
+        time_reader!("  rhythm_core", rhythm_metrics_core(&conn, &scope));
+        time_reader!(
+            "  friction_windows",
+            time_of_day_friction_windows_with(&conn, &scope, now_ms, &shared_runs, &focus_context)
+        );
         eprintln!("{:<26} {:>10.1?}", "WHOLE STACK", whole.elapsed());
     }
 

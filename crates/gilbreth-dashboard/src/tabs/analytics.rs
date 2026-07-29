@@ -619,14 +619,6 @@ fn focus_section(ui: &mut egui::Ui, data: &AnalyticsData) {
         ),
     ];
     widgets::gauge_tiles_capped(ui, &gauges, 5);
-    widgets::insight_lines(
-        ui,
-        &[
-            "Mark et al.'s famous ~25m resume figure measures wall-clock working spheres; \
-             Gilbreth reports active app-focus time, so the numbers are not directly \
-             comparable.",
-        ],
-    );
     summary_section(
         ui,
         "analytics-focus-detail",
@@ -644,6 +636,9 @@ fn focus_section(ui: &mut egui::Ui, data: &AnalyticsData) {
                      seconds to reduce tab-through noise, following the Iqbal & Horvitz \
                      desktop-log filtering heuristic. Raw per-app median runs remain in the \
                      table.",
+                    "Mark et al.'s ~25m resume figure is a wall-clock working-sphere result; \
+                     Gilbreth reports active app-focus diversion time, so the numbers are not \
+                     directly comparable.",
                     "Returns to anchor app count first returns on merged active-focus runs \
                      (active time), a different measurement than the 'You keep leaving and \
                      returning to ...' cards above, which count round trips on wall-clock \
@@ -698,15 +693,6 @@ fn interruption_section(ui: &mut egui::Ui, data: &AnalyticsData) {
         ),
     ];
     gauge_tiles(ui, &gauges);
-    widgets::insight_lines(
-        ui,
-        &[
-            "In a field study of information workers, people averaged about three minutes \
-             on a task before switching (González & Mark, CHI 2004).",
-            "Trips overlap and nest, so time away in diversions can exceed the period's \
-             active time.",
-        ],
-    );
     summary_section(
         ui,
         "analytics-interruption-detail",
@@ -725,7 +711,11 @@ fn interruption_section(ui: &mut egui::Ui, data: &AnalyticsData) {
                      toll is round trips times the median restart; the median keeps long \
                      passive returns (reading, watching) from dominating the estimate.",
                     "Time away in diversions adds up active time spent elsewhere during these \
-                     round trips.",
+                     round trips. Trips overlap and nest, so this total can exceed the \
+                     period's active time.",
+                    "For context: in a field study of information workers, people averaged \
+                     about three minutes on a task before switching (González & Mark, CHI \
+                     2004).",
                 ],
             );
             if costs.estimated_restart_minutes.is_some() {
@@ -794,14 +784,6 @@ fn input_load_section(ui: &mut egui::Ui, data: &AnalyticsData) {
         ),
     ];
     gauge_tiles(ui, &gauges);
-    widgets::insight_lines(
-        ui,
-        &[
-            "Microbreak research found the greatest benefit at about every 20 minutes \
-             (McLean et al., 2001); we suggest short breaks roughly every 20-30 min.",
-            "Treat the population bands as soft context, not a personal risk score.",
-        ],
-    );
     summary_section(
         ui,
         "analytics-input-detail",
@@ -823,9 +805,13 @@ fn input_load_section(ui: &mut egui::Ui, data: &AnalyticsData) {
                      musculoskeletal factors are not visible to Gilbreth.",
                     "Software-KVM / relayed mouse input is excluded.",
                     "Exposure associations are strongest for self-reported time; measured time \
-                     like this shows weaker links.",
+                     like this shows weaker links, so treat the bands as soft population \
+                     context.",
                     "Population bands: over 4h per day is the elevated band, over 6h the high \
-                     band (Health Council of the Netherlands, 2012).",
+                     band. Population context only, not a personal risk score (Health Council \
+                     of the Netherlands, 2012).",
+                    "Microbreak research found the greatest benefit at about every 20 minutes \
+                     (McLean et al., 2001); we suggest short breaks roughly every 20-30 min.",
                 ],
             );
             if !exposure.breakdown.is_empty() {
@@ -977,8 +963,13 @@ fn episodes_section(
         // An in-section summary, not a Tables-view export surface: body
         // typography and no scroll area — the name column is clamped so
         // the grid always fits the card (the 2026-07-28 walk).
+        ui.add_space(2.0);
+        // Roomy body-type grid (the 2026-07-28 walk, round two): generous
+        // column gaps and row padding, and the name column carries the
+        // slack instead of squeezing against fixed columns.
         egui::Grid::new("analytics-episodes-longest")
-            .spacing(egui::vec2(18.0, 3.0))
+            .spacing(egui::vec2(34.0, 8.0))
+            .min_col_width(96.0)
             .show(ui, |ui| {
                 for header in ["When", "Name", "Active", "Switches"] {
                     ui.label(RichText::new(header).color(theme::GRAY).size(11.5));
@@ -996,26 +987,27 @@ fn episodes_section(
                             local_clock(episode.start_ms)
                         ))
                         .color(theme::SILVER_DIM)
-                        .size(12.5),
+                        .size(13.0),
                     );
                     ui.label(
-                        RichText::new(ellipsize(&name, 40))
+                        RichText::new(ellipsize(&name, 58))
                             .color(theme::SILVER)
-                            .size(12.5),
+                            .size(13.0),
                     );
                     ui.label(
                         RichText::new(format_duration_ms(episode.active_ms))
                             .color(theme::SILVER_DIM)
-                            .size(12.5),
+                            .size(13.0),
                     );
                     ui.label(
                         RichText::new(thousands(episode.switch_count))
                             .color(theme::SILVER_DIM)
-                            .size(12.5),
+                            .size(13.0),
                     );
                     ui.end_row();
                 }
             });
+        ui.add_space(2.0);
     }
     summary_section(
         ui,

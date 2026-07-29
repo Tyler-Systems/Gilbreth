@@ -1335,6 +1335,12 @@ fn build_analytics_snapshot(
             sphere_overlay = Some(working_spheres_overlay(&conn, &scope, &alias_map)?);
         }
 
+        // One input-run sweep for the whole snapshot: exposure, the
+        // candidate detectors, and the friction windows all consume the
+        // same result instead of each re-scanning the events table (the
+        // 2026-07-28 timing finding: three sweeps per Analytics load).
+        let (shared_runs, shared_counts) = gilbreth_read::input_runs_and_counts(&conn, &scope)?;
+        let focus_context = gilbreth_read::focus_cost_context(&conn, &scope)?;
         Ok(AnalyticsData {
             session_options: session_options(&conn)?,
             focus: focus_rollup(&conn, &scope)?,
@@ -1343,14 +1349,25 @@ fn build_analytics_snapshot(
             sessions: session_analytics(&conn, &scope)?,
             inputs: input_rollup(&conn, &scope)?,
             lifecycle: window_lifecycle_rollup(&conn, &scope)?,
-            candidates: patterns_worth_reviewing(&conn, &scope)?,
+            candidates: gilbreth_read::patterns_worth_reviewing_with(&conn, &scope, &shared_runs)?,
             pattern_history_days: pattern_history_days(&conn, &scope)?,
-            fragmentation: fragmentation_metrics(&conn, &scope)?,
-            interruption: interruption_costs(&conn, &scope)?,
-            input_exposure: input_exposure_metrics(&conn, &scope)?,
+            fragmentation: gilbreth_read::fragmentation_metrics_with(&focus_context),
+            interruption: gilbreth_read::interruption_costs_with(&focus_context),
+            input_exposure: gilbreth_read::input_exposure_metrics_with(
+                &conn,
+                &scope,
+                &shared_runs,
+                &shared_counts,
+            )?,
             spheres: working_spheres_skeleton(&conn, &scope)?,
             sphere_overlay,
-            rhythm: rhythm_metrics(&conn, &scope, now_ms)?,
+            rhythm: gilbreth_read::rhythm_metrics_with(
+                &conn,
+                &scope,
+                now_ms,
+                &shared_runs,
+                &focus_context,
+            )?,
             overlay_enabled,
             aliases,
         })
