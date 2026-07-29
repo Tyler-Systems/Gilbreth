@@ -390,7 +390,7 @@ fn rich_snapshot() -> TodaySnapshot {
                 },
             ],
             detail: "Estimated 29m of restart toll across today's returns.".to_string(),
-            baseline: "Recent p75 restart: 3m 40s.".to_string(),
+            baseline: "Three-quarters of recent restarts stay within 3m 40s.".to_string(),
             total_count: 7,
             median_restart_seconds: Some(250.0),
             estimated_restart_minutes: Some(29.0),
@@ -2349,13 +2349,10 @@ fn analytics_renders_selectors_header_and_analysis_sections() {
     harness.get_by_label("Active input, per day");
     harness.get_by_label("Active time groups into 2 episodes; the median runs 1h 8m 30s.");
     harness.get_by_label("Episodes");
-    // Skeleton mode offers the opt-in inside the episodes Details (the
-    // page's fifth plain expander), not the opt-out.
-    harness
-        .get_all_by_label("Details")
-        .nth(4)
-        .expect("the episodes Details")
-        .click();
+    harness.get_by_label("Longest episodes");
+    // Skeleton mode offers the opt-in inside the Episode names section
+    // (its own expander since the 2026-07-28 UI/UX pass), not the opt-out.
+    harness.get_by_label("Episode names").click();
     harness.run();
     harness.get_by_label("Name these episodes from window titles (optional)");
     assert!(harness
@@ -2428,12 +2425,9 @@ fn analytics_overlay_alias_remove_and_opt_out_write_through_host() {
     let writes: SharedWrites = Arc::default();
     let mut harness = analytics_harness(overlay_analytics_snapshot(), writes.clone());
     harness.get_by_label("Time with a name");
-    // The naming controls live inside the episodes Details now.
-    harness
-        .get_all_by_label("Details")
-        .nth(4)
-        .expect("the episodes Details")
-        .click();
+    // The naming controls live in their own Episode names section since
+    // the 2026-07-28 UI/UX pass.
+    harness.get_by_label("Episode names").click();
     harness.run();
     harness.get_by_label("Rename or merge spheres");
     harness.get_by_label("Remove").click();
@@ -5162,12 +5156,9 @@ fn narrow_window_wraps_tiles_and_stacks_pattern_metrics() {
 fn analytics_sphere_combo_popup_dismisses_on_escape_and_outside_click() {
     let writes: SharedWrites = Arc::default();
     let mut harness = analytics_harness(overlay_analytics_snapshot(), writes);
-    // The naming controls live inside the episodes Details now.
-    harness
-        .get_all_by_label("Details")
-        .nth(4)
-        .expect("the episodes Details")
-        .click();
+    // The naming controls live in their own Episode names section since
+    // the 2026-07-28 UI/UX pass.
+    harness.get_by_label("Episode names").click();
     harness.run();
     // Closed: the token label appears only on the combo header.
     let closed_count = harness.get_all_by_label("gilbreth").count();
@@ -5357,7 +5348,7 @@ fn visual_snapshot_today_rich() {
     harness.run();
     // Open the first evidence drawer so the grid is part of the visual
     // record.
-    harness.get_by_label("Evidence (2 rows)").click();
+    harness.get_by_label("Evidence (2 entries)").click();
     harness.run();
     platform_snapshot(&mut harness, "today_rich");
 }

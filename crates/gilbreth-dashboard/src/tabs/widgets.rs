@@ -436,6 +436,34 @@ pub fn flagged_line(ui: &mut egui::Ui, text: &str) {
 /// tracked mono caps, lifted-brass text over the brass well inside a
 /// brass hairline. Plain sections stay unaccented so the mark keeps
 /// meaning; amber is never spent on chips.
+/// A card's fixed header-row height: the family chip's frame (11.5 mono
+/// line + 8 vertical margin + 2 stroke) is taller than the 14.5 title
+/// line, and egui's wrapped rows size to the tallest item seen SO FAR —
+/// so a chip placed after the title hangs below the title's centerline
+/// unless the row height is fixed up front (2026-07-28 UI/UX pass).
+const CARD_TITLE_ROW_HEIGHT: f32 = 24.0;
+
+/// Card header row: title and family chip centered on one shared line,
+/// plus whatever the caller appends (e.g. right-aligned meta).
+pub fn card_title_row(
+    ui: &mut egui::Ui,
+    title: &str,
+    chip: &str,
+    extra: impl FnOnce(&mut egui::Ui),
+) {
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 8.0;
+        ui.set_row_height(CARD_TITLE_ROW_HEIGHT);
+        ui.label(
+            RichText::new(title)
+                .color(theme::SILVER)
+                .font(theme::heading_card()),
+        );
+        family_chip(ui, chip);
+        extra(ui);
+    });
+}
+
 pub fn family_chip(ui: &mut egui::Ui, text: &str) {
     let mut job = egui::text::LayoutJob::default();
     job.append(

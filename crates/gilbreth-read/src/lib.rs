@@ -2650,7 +2650,12 @@ fn discovery_notice_key(notice_type: &str, parts: &[String]) -> String {
     cleaned.join("|")
 }
 
-fn duration_baseline_text(values_ms: &[i64]) -> (Option<i64>, String) {
+/// The baseline sentence spells out what the nearest-rank 75th percentile
+/// means instead of naming it ("recent p75" read as jargon — the
+/// 2026-07-28 UI/UX pass). `noun` is the family's own sample word
+/// ("spans", "ramps", "episodes") so the sentence stays honest about what
+/// was measured.
+fn duration_baseline_text(values_ms: &[i64], noun: &str) -> (Option<i64>, String) {
     let samples: Vec<f64> = values_ms
         .iter()
         .filter(|value| **value > 0)
@@ -2662,11 +2667,14 @@ fn duration_baseline_text(values_ms: &[i64]) -> (Option<i64>, String) {
     let p75 = percentile_nearest_rank(&samples, 75.0) as i64;
     (
         Some(p75),
-        format!("recent p75 {}.", notice_duration_text(p75)),
+        format!(
+            "Three-quarters of recent {noun} stay within {}.",
+            notice_duration_text(p75)
+        ),
     )
 }
 
-fn rate_baseline_text(values: &[f64], unit: &str) -> (Option<f64>, String) {
+fn rate_baseline_text(values: &[f64], unit: &str, noun: &str) -> (Option<f64>, String) {
     let samples: Vec<f64> = values
         .iter()
         .copied()
@@ -2676,7 +2684,10 @@ fn rate_baseline_text(values: &[f64], unit: &str) -> (Option<f64>, String) {
         return (None, "Recent baseline is still forming.".to_string());
     }
     let p75 = percentile_nearest_rank(&samples, 75.0);
-    (Some(p75), format!("recent p75 {p75:.1} {unit}."))
+    (
+        Some(p75),
+        format!("Three-quarters of recent {noun} stay within {p75:.1} {unit}."),
+    )
 }
 
 fn dominant_input_app(run: &InputRun) -> String {
@@ -3265,7 +3276,7 @@ fn input_dense_notices(conn: &Connection, now_ms: i64) -> rusqlite::Result<Vec<D
         .filter(|run| run.max_ts < today_start && run.run_ms >= SWITCH_RATE_MIN_ACTIVE_MS)
         .map(|run| run.run_ms)
         .collect();
-    let (p75_ms, baseline) = duration_baseline_text(&prior_ms);
+    let (p75_ms, baseline) = duration_baseline_text(&prior_ms, "spans");
     let threshold = INPUT_DENSE_NOTICE_MIN_MS.max(p75_ms.unwrap_or(INPUT_EXPOSURE_LONG_RUN_MS));
     let today_runs: Vec<InputRun> = runs
         .into_iter()
@@ -3363,7 +3374,7 @@ fn episode_fragmentation_notices(
         })
         .filter_map(episode_switch_rate)
         .collect();
-    let (p75_rate, baseline) = rate_baseline_text(&prior_rates, "switches/hr");
+    let (p75_rate, baseline) = rate_baseline_text(&prior_rates, "switches/hr", "episodes");
     let threshold = EPISODE_FRAGMENTATION_MIN_SWITCHES_PER_HOUR
         .max(p75_rate.unwrap_or(EPISODE_FRAGMENTATION_MIN_SWITCHES_PER_HOUR));
     let mut today_episodes: Vec<(WorkEpisode, f64)> = Vec::new();
@@ -3873,11 +3884,13 @@ fn clipboard_bridge_notices(
         }
         today_records.sort_by_key(|record| std::cmp::Reverse(record.ts));
         let median_handoff = median_i64_as_f64(&mut handoff_ms.clone()).unwrap_or(0.0) as i64;
+        // Its own line under the headline sentence, in plain words (the
+        // 2026-07-28 UI/UX pass); still counts only, never content.
         let text_clause = if char_counts.is_empty() {
             String::new()
         } else {
             let median_chars = median_i64_as_f64(&mut char_counts.clone()).unwrap_or(0.0) as i64;
-            format!(" Median text metadata {median_chars} characters when present.")
+            format!("\nMedian copied-text length when known: {median_chars} characters.")
         };
         let evidence = today_records
             .iter()
@@ -3930,7 +3943,7 @@ fn ramp_notices(conn: &Connection, now_ms: i64) -> rusqlite::Result<Vec<Discover
         .filter(|record| record.anchor_ts < today_start)
         .map(|record| record.duration_ms)
         .collect();
-    let (p75_ms, baseline) = duration_baseline_text(&prior_ms);
+    let (p75_ms, baseline) = duration_baseline_text(&prior_ms, "ramps");
     let threshold = RAMP_NOTICE_MIN_MS.max(p75_ms.unwrap_or(0));
     let mut today_records: Vec<RampRecord> = records
         .into_iter()
@@ -4011,7 +4024,10 @@ fn time_anchor_notices(conn: &Connection, now_ms: i64) -> rusqlite::Result<Vec<D
     });
     let mut notices = Vec::new();
     for row in windows {
-        let baseline = format!("Recent p75: {:.1} {}.", row.baseline, row.unit);
+        let baseline = format!(
+            "Three-quarters of recent days stay within {:.1} {} in this hour.",
+            row.baseline, row.unit
+        );
         let mut evidence = DiscoveryNoticeEvidence::at(today_start + (row.hour * 3_600_000));
         evidence.duration_ms = Some(3_600_000);
         evidence.rate = Some(row.value);

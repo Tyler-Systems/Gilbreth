@@ -641,19 +641,11 @@ fn notice_card(
 ) {
     let state = &snapshot.notice_state;
     accent_card(ui, |ui| {
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing.x = 8.0;
-            ui.label(
-                RichText::new(&notice.title)
-                    .color(theme::SILVER)
-                    .font(theme::heading_card()),
-            );
-            let mut chip = notice_type_label(&notice.notice_type).to_uppercase();
-            if state.watched.contains(&notice.notice_key) {
-                chip.push_str(" • WATCHED");
-            }
-            family_chip(ui, &chip);
-        });
+        let mut chip = notice_type_label(&notice.notice_type).to_uppercase();
+        if state.watched.contains(&notice.notice_key) {
+            chip.push_str(" • WATCHED");
+        }
+        widgets::card_title_row(ui, &notice.title, &chip, |_| {});
         ui.add_space(3.0);
         ui.label(
             RichText::new(&notice.summary)
@@ -691,7 +683,11 @@ fn notice_card(
             let evidence_title = if notice.evidence.is_empty() {
                 "Evidence".to_string()
             } else {
-                format!("Evidence ({} rows)", notice.evidence.len())
+                {
+                    let count = notice.evidence.len();
+                    let noun = if count == 1 { "entry" } else { "entries" };
+                    format!("Evidence ({count} {noun})")
+                }
             };
             egui::CollapsingHeader::new(
                 RichText::new(evidence_title).color(theme::BLUE).size(12.0),

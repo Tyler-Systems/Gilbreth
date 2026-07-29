@@ -200,17 +200,19 @@ pub fn show(ui: &mut egui::Ui, snapshot: &WeekSnapshot) {
             } else {
                 "Quieter:"
             };
+            // Body-size like the section captions around it ("The apps you
+            // open first…"), not takeaway-size — the 2026-07-28 UI/UX pass.
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
                 ui.label(
                     RichText::new(label)
                         .color(theme::SILVER)
-                        .font(FontId::new(theme::TAKEAWAY_SIZE, theme::family_medium())),
+                        .font(FontId::new(13.0, theme::family_medium())),
                 );
                 ui.label(
                     RichText::new(format!("{}.", change.evidence))
                         .color(theme::SILVER)
-                        .size(theme::TAKEAWAY_SIZE),
+                        .size(13.0),
                 );
             });
         }

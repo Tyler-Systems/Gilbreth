@@ -511,24 +511,17 @@ fn family_card(
     actions: &mut Vec<AnalyticsAction>,
 ) {
     accent_card(ui, |ui| {
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing.x = 8.0;
-            ui.label(
-                RichText::new(&candidate.title)
-                    .color(theme::SILVER)
-                    .font(theme::heading_card()),
-            );
-            let family = widgets::candidate_kind_label(&candidate.kind).to_uppercase();
-            let variants = family_counts
-                .get(candidate.kind.as_str())
-                .copied()
-                .unwrap_or(1);
-            let chip = if variants > 1 {
-                format!("{family} • {variants} VARIANTS")
-            } else {
-                family
-            };
-            family_chip(ui, &chip);
+        let family = widgets::candidate_kind_label(&candidate.kind).to_uppercase();
+        let variants = family_counts
+            .get(candidate.kind.as_str())
+            .copied()
+            .unwrap_or(1);
+        let chip = if variants > 1 {
+            format!("{family} • {variants} VARIANTS")
+        } else {
+            family
+        };
+        widgets::card_title_row(ui, &candidate.title, &chip, |ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(
                     RichText::new(format!(
@@ -943,6 +936,42 @@ fn episodes_section(
         gauges.push(("Time with a name", named));
     }
     gauge_tiles(ui, &gauges);
+    // The 2026-07-28 UI/UX pass: the section shows its five longest
+    // episodes instead of hiding everything behind Tables, and the
+    // sphere-naming tooling moves out of the methodology expander into
+    // its own section below.
+    let episodes = match &data.sphere_overlay {
+        Some(overlay) => &overlay.episodes,
+        None => &data.spheres.episodes,
+    };
+    let mut longest: Vec<&gilbreth_read::WorkEpisode> = episodes.iter().collect();
+    longest.sort_by(|left, right| right.active_ms.cmp(&left.active_ms));
+    longest.truncate(5);
+    if !longest.is_empty() {
+        ui.add_space(4.0);
+        ui.label(
+            RichText::new("Longest episodes")
+                .color(theme::SILVER)
+                .font(FontId::new(12.5, theme::family_medium())),
+        );
+        let headers = ["When", "Name", "Active", "Switches"];
+        let rows: Vec<Vec<String>> = longest
+            .iter()
+            .map(|episode| {
+                let name = episode
+                    .sphere
+                    .clone()
+                    .unwrap_or_else(|| episode.dominant_app.clone());
+                vec![
+                    format!("{} {}", episode.local_date, local_clock(episode.start_ms)),
+                    ellipsize(&name, 48),
+                    format_duration_ms(episode.active_ms),
+                    thousands(episode.switch_count),
+                ]
+            })
+            .collect();
+        data_table(ui, "analytics-episodes-longest", &headers, &rows);
+    }
     summary_section(
         ui,
         "analytics-episodes-detail",
@@ -951,30 +980,49 @@ fn episodes_section(
         false,
         false,
         |ui| {
+            // The split rule lives in the caption above; these carry only
+            // what the caption does not.
             bullet_list(
                 ui,
                 &[
-                    "Episodes split where you were away for more than 5 minutes. Switches \
-                     count app changes within the episode; switch density is switches per \
-                     active hour inside it.",
-                    "Time with a name is the share of active episode time where at least one \
-                     window title gave the episode a usable name. Episodes without titles \
-                     stay grouped by app.",
+                    "Switches count app changes within an episode; switch density is \
+                     switches per active hour.",
+                    "Time with a name is the share of active time where a window title \
+                     named the episode; untitled episodes stay grouped by app.",
                 ],
             );
             tables_jump_button(ui, "Open in Tables: work episodes", "episodes");
-            ui.add_space(4.0);
-            match &data.sphere_overlay {
-                Some(overlay) => {
-                    rename_merge_controls(ui, view, data, overlay, actions);
-                    if widgets::small_button(ui, "Turn off names from titles") {
-                        actions.push(AnalyticsAction::SetOverlayEnabled(false));
-                    }
-                }
-                None => naming_opt_in(ui, actions),
-            }
         },
     );
+    summary_section(
+        ui,
+        "analytics-episode-names",
+        "Episode names",
+        "",
+        false,
+        false,
+        |ui| match &data.sphere_overlay {
+            Some(overlay) => {
+                rename_merge_controls(ui, view, data, overlay, actions);
+                if widgets::small_button(ui, "Turn off names from titles") {
+                    actions.push(AnalyticsAction::SetOverlayEnabled(false));
+                }
+            }
+            None => naming_opt_in(ui, actions),
+        },
+    );
+}
+
+/// Char-boundary-safe display truncation for title-derived labels; the
+/// full text stays available where it matters (the combo popup, Tables).
+fn ellipsize(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        text.to_string()
+    } else {
+        let mut shortened: String = text.chars().take(max_chars.saturating_sub(1)).collect();
+        shortened.push('…');
+        shortened
+    }
 }
 
 fn naming_opt_in(ui: &mut egui::Ui, actions: &mut Vec<AnalyticsAction>) {
@@ -1059,7 +1107,9 @@ fn rename_merge_controls(
         ui.horizontal_wrapped(|ui| {
             let filter_id = ui.id().with("sphere-token-filter");
             egui::ComboBox::from_id_salt("sphere-alias-token")
-                .selected_text(selected.clone())
+                // Title-derived labels can be sentence-long; the button
+                // shows a clamped preview, the popup shows full labels.
+                .selected_text(ellipsize(&selected, 34))
                 .width(240.0_f32.min(ui.available_width().max(120.0)))
                 .show_ui(ui, |ui| {
                     // UX-31: dozens of title-derived labels need a
