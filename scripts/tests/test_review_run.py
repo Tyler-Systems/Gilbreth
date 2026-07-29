@@ -436,6 +436,145 @@ def test_review_run_never_explains_duplicate_seqs_by_deletion_audit(
     assert review.explained_gap_sessions == ()
 
 
+def test_review_run_merges_adjacent_audit_spans_across_batches(
+    tmp_path: Path,
+) -> None:
+    """A multi-batch prune audits one operation as adjacent per-batch spans;
+    a missing run crossing the batch boundary is still explained. Spans that
+    leave uncovered seqs between them are not a union."""
+    path = tmp_path / "batch-spans.db"
+    create_db(path)
+    conn = sqlite3.connect(path)
+    try:
+        insert_session(conn, 1, started_at=1_000, ended_at=10_000)
+        insert_event(conn, 1, session_id=1, seq=1, ts=2_000)
+        insert_event(conn, 2, session_id=1, seq=8, ts=6_000)
+        for seq_min, seq_max in ((2, 4), (5, 7)):
+            insert_deletion_audit(
+                conn,
+                kind="mouse_move_retention",
+                performed_at=20_000,
+                session_id=1,
+                rows_deleted=3,
+                seq_min=seq_min,
+                seq_max=seq_max,
+                cutoff_ms=15_000,
+            )
+        insert_session(conn, 2, started_at=1_000, ended_at=10_000)
+        insert_event(conn, 3, session_id=2, seq=1, ts=2_000)
+        insert_event(conn, 4, session_id=2, seq=8, ts=6_000)
+        for seq_min, seq_max in ((2, 3), (6, 7)):
+            insert_deletion_audit(
+                conn,
+                kind="mouse_move_retention",
+                performed_at=20_000,
+                session_id=2,
+                rows_deleted=3,
+                seq_min=seq_min,
+                seq_max=seq_max,
+                cutoff_ms=15_000,
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+    review = review_database(path)
+
+    assert review.explained_gap_sessions == (1,)
+    # Session 2's seqs 4 and 5 are covered by neither span: not a union.
+    assert review.seq_gap_sessions == (2,)
+
+
+def test_review_run_count_arm_keeps_wide_audit_spans_honest(
+    tmp_path: Path,
+) -> None:
+    """Containment alone would let a 2-row audit excuse a 100-row loss
+    inside its span; the missing count must also fit the audited sum.
+    Prefix-trim slack (audited > missing) stays explained."""
+    path = tmp_path / "count-arm.db"
+    create_db(path)
+    conn = sqlite3.connect(path)
+    try:
+        insert_session(conn, 1, started_at=1_000, ended_at=10_000)
+        insert_event(conn, 1, session_id=1, seq=1, ts=2_000)
+        insert_event(conn, 2, session_id=1, seq=102, ts=6_000)
+        insert_deletion_audit(
+            conn,
+            kind="event_delete",
+            performed_at=20_000,
+            session_id=1,
+            rows_deleted=2,
+            seq_min=2,
+            seq_max=101,
+        )
+        insert_session(conn, 2, started_at=1_000, ended_at=10_000)
+        insert_event(conn, 3, session_id=2, seq=5, ts=2_000)
+        insert_event(conn, 4, session_id=2, seq=7, ts=6_000)
+        # A dashboard prune trimmed seqs 0-4 (a prefix, invisible to the
+        # gap check) plus seq 6: audited 50 covers the 1 observed missing.
+        insert_deletion_audit(
+            conn,
+            kind="dashboard_prune",
+            performed_at=20_000,
+            session_id=2,
+            rows_deleted=50,
+            seq_min=0,
+            seq_max=6,
+            cutoff_ms=15_000,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    review = review_database(path)
+
+    assert review.seq_gap_sessions == (1,)
+    assert review.explained_gap_sessions == (2,)
+
+
+def test_review_run_discards_audit_spans_from_before_the_session_began(
+    tmp_path: Path,
+) -> None:
+    """Pre-erase residue: a v0.1.1 rollback erases without knowing
+    deletion_audit, and session ids restart — a span stamped before this
+    session began must not explain its gaps."""
+    path = tmp_path / "stale-span.db"
+    create_db(path)
+    conn = sqlite3.connect(path)
+    try:
+        insert_session(conn, 1, started_at=1_000, ended_at=10_000)
+        insert_event(conn, 1, session_id=1, seq=1, ts=2_000)
+        insert_event(conn, 2, session_id=1, seq=5, ts=6_000)
+        insert_deletion_audit(
+            conn,
+            kind="mouse_move_retention",
+            performed_at=500,
+            session_id=1,
+            rows_deleted=3,
+            seq_min=2,
+            seq_max=4,
+            cutoff_ms=400,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    review = review_database(path)
+    assert review.seq_gap_sessions == (1,)
+    assert review.explained_gap_sessions == ()
+
+    conn = sqlite3.connect(path)
+    try:
+        conn.execute("UPDATE deletion_audit SET performed_at = 2000")
+        conn.commit()
+    finally:
+        conn.close()
+
+    review = review_database(path)
+    assert review.seq_gap_sessions == ()
+    assert review.explained_gap_sessions == (1,)
+
+
 def test_review_run_treats_a_pre_audit_database_as_unexplained(
     tmp_path: Path,
 ) -> None:

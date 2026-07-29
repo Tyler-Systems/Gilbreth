@@ -46,9 +46,15 @@ span (plus the cutoff for prune kinds). No content and no event timestamps
 are preserved. The seq-continuity health check (review_run.py and
 `gilbreth-read`) uses the spans to classify a gap as a recorded deletion
 rather than data loss; a gap not covered by audited spans still reads as
-REVIEW. Audit rows deliberately outlive their sessions and carry no FK;
-secure erase deletes the table with everything else, and archives carry
-their audit rows along.
+REVIEW; and a session's total missing seqs must fit inside its audited
+rows_deleted sum, so a wide span cannot excuse a larger loss inside it.
+Audit rows deliberately outlive their sessions and carry no FK; secure
+erase deletes the table with everything else, and archives carry their
+audit rows along. Rollback residue is stated, not hidden: a binary rolled
+back before 008 erases without knowing this table, leaving value-free
+audit rows behind while session ids restart — the checkers therefore
+discard any span stamped before its session began, so pre-erase residue
+can never explain a fresh session's gaps.
 
 Record Routine tables (`record_requests`, `record_sessions`, `selector_paths`,
 and `action_events`) are active for the dashboard/tray/writer lifecycle,

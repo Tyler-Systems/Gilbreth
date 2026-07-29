@@ -9232,7 +9232,9 @@ fn merged_audit_spans(mut spans: Vec<(i64, i64)>) -> Vec<(i64, i64)> {
     let mut merged: Vec<(i64, i64)> = Vec::new();
     for (start, end) in spans {
         match merged.last_mut() {
-            Some((_, last_end)) if start <= *last_end + 1 => {
+            // saturating_add: a corrupt seq_max of i64::MAX must degrade
+            // toward flagging, not overflow (Python bigints cannot).
+            Some((_, last_end)) if start <= last_end.saturating_add(1) => {
                 *last_end = (*last_end).max(end);
             }
             _ => merged.push((start, end)),
@@ -9241,16 +9243,31 @@ fn merged_audit_spans(mut spans: Vec<(i64, i64)>) -> Vec<(i64, i64)> {
     merged
 }
 
+/// One deletion_audit row's slice of a session: seq span, operation
+/// timestamp, and the recorded row count.
+#[derive(Debug, Clone, Copy)]
+struct AuditSpan {
+    seq_min: i64,
+    seq_max: i64,
+    performed_at: i64,
+    rows_deleted: i64,
+}
+
 /// True when every missing seq in the session's shared span falls inside a
-/// recorded-deletion span (migration 008). Duplicate seqs are never a
-/// recorded deletion, and a missing run outside the audited spans still
-/// reads as possible data loss — both keep the session flagged. Mirrors
-/// review_run's `_session_gap_is_explained`.
+/// recorded-deletion span (migration 008) AND the total missing count fits
+/// inside the audited rows_deleted sum (<=, because prefix/suffix deletions
+/// shrink the observed span instead of leaving holes). The count arm keeps
+/// a wide span honest: a 2-row audit must not excuse a 10,000-row loss
+/// inside its span. Duplicate seqs are never a recorded deletion, and a
+/// missing run outside the audited spans still reads as possible data loss
+/// — all three keep the session flagged. Spans arrive already filtered to
+/// this session's lifetime by the caller. Mirrors review_run's
+/// `_session_gap_is_explained`.
 fn session_gap_is_explained(
     conn: &Connection,
     session_id: i64,
     has_action_events: bool,
-    spans: &[(i64, i64)],
+    spans: &[AuditSpan],
 ) -> rusqlite::Result<bool> {
     if spans.is_empty() {
         return Ok(false);
@@ -9267,7 +9284,16 @@ fn session_gap_is_explained(
         .query_map([session_id], |row| row.get(0))?
         .collect::<rusqlite::Result<_>>()?;
     seqs.sort_unstable();
-    let merged = merged_audit_spans(spans.to_vec());
+    let merged = merged_audit_spans(
+        spans
+            .iter()
+            .map(|span| (span.seq_min, span.seq_max))
+            .collect(),
+    );
+    let audited_total: i64 = spans
+        .iter()
+        .fold(0i64, |sum, span| sum.saturating_add(span.rows_deleted));
+    let mut missing_total: i64 = 0;
     let mut previous: Option<i64> = None;
     for seq in seqs {
         if previous == Some(seq) {
@@ -9282,11 +9308,12 @@ fn session_gap_is_explained(
                 {
                     return Ok(false);
                 }
+                missing_total = missing_total.saturating_add(run_end - run_start + 1);
             }
         }
         previous = Some(seq);
     }
-    Ok(true)
+    Ok(missing_total <= audited_total)
 }
 
 pub fn database_health(conn: &Connection) -> rusqlite::Result<DatabaseHealth> {
@@ -9338,14 +9365,19 @@ pub fn database_health(conn: &Connection) -> rusqlite::Result<DatabaseHealth> {
             [],
             |row| row.get(0),
         )?;
-        let mut spans: HashMap<i64, Vec<(i64, i64)>> = HashMap::new();
-        let mut stmt = conn.prepare("SELECT session_id, seq_min, seq_max FROM deletion_audit")?;
+        let mut spans: HashMap<i64, Vec<AuditSpan>> = HashMap::new();
+        let mut stmt = conn.prepare(
+            "SELECT session_id, seq_min, seq_max, performed_at, rows_deleted
+             FROM deletion_audit",
+        )?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
-            spans
-                .entry(row.get(0)?)
-                .or_default()
-                .push((row.get(1)?, row.get(2)?));
+            spans.entry(row.get(0)?).or_default().push(AuditSpan {
+                seq_min: row.get(1)?,
+                seq_max: row.get(2)?,
+                performed_at: row.get(3)?,
+                rows_deleted: row.get(4)?,
+            });
         }
         (Some(total), spans)
     } else {
@@ -9354,11 +9386,30 @@ pub fn database_health(conn: &Connection) -> rusqlite::Result<DatabaseHealth> {
     let mut seq_gap_sessions = Vec::new();
     let mut explained_gap_sessions = Vec::new();
     for flagged_session in flagged_gap_sessions {
-        let spans = audit_spans
+        let mut spans = audit_spans
             .get(&flagged_session)
-            .map(Vec::as_slice)
-            .unwrap_or(&[]);
-        if session_gap_is_explained(conn, flagged_session, has_action_events, spans)? {
+            .cloned()
+            .unwrap_or_default();
+        if !spans.is_empty() {
+            // A deletion inside a session can only happen after the session
+            // began. Spans stamped earlier are residue from a pre-008
+            // binary's erase (it does not know this table, and session ids
+            // restart after erase), and residue must never explain a fresh
+            // session's gaps — discarding fails toward REVIEW, the honest
+            // direction. Mirrors review_run.
+            let started_at: Option<i64> = conn
+                .query_row(
+                    "SELECT started_at FROM sessions WHERE session_id = ?1",
+                    [flagged_session],
+                    |row| row.get(0),
+                )
+                .optional()?
+                .flatten();
+            if let Some(started_at) = started_at {
+                spans.retain(|span| span.performed_at >= started_at);
+            }
+        }
+        if session_gap_is_explained(conn, flagged_session, has_action_events, &spans)? {
             explained_gap_sessions.push(flagged_session);
         } else {
             seq_gap_sessions.push(flagged_session);
@@ -10610,6 +10661,80 @@ mod tests {
         assert_eq!(health.seq_gap_sessions, vec![1]);
         assert!(health.explained_gap_sessions.is_empty());
         assert!(!health.healthy());
+    }
+
+    #[test]
+    fn merged_audit_spans_form_a_union_without_overflow() {
+        assert_eq!(merged_audit_spans(vec![(5, 7), (2, 4)]), vec![(2, 7)]);
+        assert_eq!(
+            merged_audit_spans(vec![(2, 3), (6, 7)]),
+            vec![(2, 3), (6, 7)]
+        );
+        assert_eq!(merged_audit_spans(vec![(1, 10), (4, 6)]), vec![(1, 10)]);
+        // A corrupt span reaching i64::MAX degrades toward flagging
+        // instead of overflowing (Python bigints cannot overflow).
+        assert_eq!(
+            merged_audit_spans(vec![(0, i64::MAX), (3, 5)]),
+            vec![(0, i64::MAX)]
+        );
+    }
+
+    #[test]
+    fn database_health_merges_adjacent_batch_spans_and_checks_counts() {
+        let conn = health_fixture_db();
+        create_deletion_audit_table(&conn);
+        conn.execute_batch(
+            "INSERT INTO events (session_id, seq, ts, kind) VALUES
+                 (2, 1, 4000, 'focus_changed'),
+                 (2, 8, 5000, 'focus_changed'),
+                 (3, 1, 6000, 'focus_changed'),
+                 (3, 102, 7000, 'focus_changed');
+             INSERT INTO deletion_audit
+                 (kind, performed_at, session_id, rows_deleted, seq_min, seq_max, cutoff_ms)
+             VALUES
+                 ('mouse_move_retention', 9000, 2, 3, 2, 4, 3500),
+                 ('mouse_move_retention', 9000, 2, 3, 5, 7, 3500),
+                 ('event_delete', 9000, 3, 2, 2, 101, NULL);",
+        )
+        .expect("batch spans and a wide span");
+
+        let health = database_health(&conn).expect("health reads");
+        // Session 2's missing run 2..7 crosses the batch boundary: the
+        // span union covers it and 6 missing fit the audited 6. Session
+        // 3's 100 missing exceed its audited 2 — containment alone must
+        // not excuse them.
+        assert_eq!(health.explained_gap_sessions, vec![2]);
+        assert_eq!(health.seq_gap_sessions, vec![3]);
+    }
+
+    #[test]
+    fn database_health_discards_audit_spans_from_before_the_session_began() {
+        let conn = health_fixture_db();
+        create_deletion_audit_table(&conn);
+        conn.execute_batch(
+            "INSERT INTO sessions (session_id, started_at, ended_at)
+             VALUES (2, 1000, NULL);
+             INSERT INTO events (session_id, seq, ts, kind) VALUES
+                 (2, 1, 4000, 'focus_changed'),
+                 (2, 5, 5000, 'focus_changed');
+             INSERT INTO deletion_audit
+                 (kind, performed_at, session_id, rows_deleted, seq_min, seq_max, cutoff_ms)
+             VALUES ('mouse_move_retention', 500, 2, 3, 2, 4, 400);",
+        )
+        .expect("stale span fixture");
+
+        // Pre-erase residue: stamped before the session began, so it must
+        // not explain the gap (a v0.1.1 rollback erase leaves audit rows
+        // while session ids restart).
+        let health = database_health(&conn).expect("health reads");
+        assert_eq!(health.seq_gap_sessions, vec![2]);
+        assert!(health.explained_gap_sessions.is_empty());
+
+        conn.execute("UPDATE deletion_audit SET performed_at = 2000", [])
+            .expect("stamp inside the session");
+        let health = database_health(&conn).expect("health reads");
+        assert!(health.seq_gap_sessions.is_empty());
+        assert_eq!(health.explained_gap_sessions, vec![2]);
     }
 
     #[test]

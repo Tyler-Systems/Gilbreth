@@ -91,7 +91,7 @@ WHERE kind = 'focus_changed'
   AND json_extract(payload, '$.recovered') = 1
 """
 DELETION_AUDIT_SPANS_SQL = """
-SELECT session_id, seq_min, seq_max
+SELECT session_id, seq_min, seq_max, performed_at, rows_deleted
 FROM deletion_audit
 """
 DELETION_AUDIT_TOTAL_SQL = "SELECT COALESCE(SUM(rows_deleted), 0) FROM deletion_audit"
@@ -225,12 +225,16 @@ def review_database(db_path: Path) -> DatabaseReview:
             deletion_audit_rows_deleted = int(
                 conn.execute(DELETION_AUDIT_TOTAL_SQL).fetchone()[0]
             )
-            audit_spans: dict[int, list[tuple[int, int]]] = {}
-            for span_session, seq_min, seq_max in conn.execute(
-                DELETION_AUDIT_SPANS_SQL
-            ).fetchall():
+            audit_spans: dict[int, list[tuple[int, int, int, int]]] = {}
+            for (
+                span_session,
+                seq_min,
+                seq_max,
+                performed_at,
+                rows_deleted,
+            ) in conn.execute(DELETION_AUDIT_SPANS_SQL).fetchall():
                 audit_spans.setdefault(int(span_session), []).append(
-                    (int(seq_min), int(seq_max))
+                    (int(seq_min), int(seq_max), int(performed_at), int(rows_deleted))
                 )
         else:
             deletion_audit_rows_deleted = None
@@ -238,11 +242,28 @@ def review_database(db_path: Path) -> DatabaseReview:
         unexplained: list[int] = []
         explained: list[int] = []
         for flagged_session in flagged_gap_sessions:
+            session_spans = audit_spans.get(flagged_session, [])
+            if session_spans:
+                started_row = conn.execute(
+                    "SELECT started_at FROM sessions WHERE session_id = ?1",
+                    (flagged_session,),
+                ).fetchone()
+                started_at = started_row[0] if started_row is not None else None
+                if started_at is not None:
+                    # A deletion inside a session can only happen after the
+                    # session began. Spans stamped earlier are residue from a
+                    # pre-008 binary's erase (it does not know this table, and
+                    # session ids restart after erase), and residue must never
+                    # explain a fresh session's gaps — discarding fails toward
+                    # REVIEW, the honest direction.
+                    session_spans = [
+                        span for span in session_spans if span[2] >= int(started_at)
+                    ]
             if _session_gap_is_explained(
                 conn,
                 flagged_session,
                 has_action_events,
-                audit_spans.get(flagged_session, []),
+                session_spans,
             ):
                 explained.append(flagged_session)
             else:
@@ -384,12 +405,18 @@ def _session_gap_is_explained(
     conn: sqlite3.Connection,
     session_id: int,
     has_action_events: bool,
-    spans: list[tuple[int, int]],
+    spans: list[tuple[int, int, int, int]],
 ) -> bool:
     """True when every missing seq in the session's shared span falls inside
-    a recorded-deletion span (migration 008). Duplicate seqs are never a
-    recorded deletion, and a missing run outside the audited spans still
-    reads as possible data loss — both keep the session in REVIEW."""
+    a recorded-deletion span (migration 008) AND the total missing count
+    fits inside the audited rows_deleted sum (<=, because prefix/suffix
+    deletions shrink the observed span instead of leaving holes). The count
+    arm keeps a wide span honest: a 2-row audit must not excuse a
+    10,000-row loss inside its span. Duplicate seqs are never a recorded
+    deletion, and a missing run outside the audited spans still reads as
+    possible data loss — all three keep the session in REVIEW. Spans are
+    tuples of (seq_min, seq_max, performed_at, rows_deleted), already
+    filtered to this session's lifetime by the caller."""
     if not spans:
         return False
     if has_action_events:
@@ -397,7 +424,9 @@ def _session_gap_is_explained(
     else:
         rows = conn.execute(EVENTS_ONLY_SESSION_SEQS_SQL, (session_id,)).fetchall()
     seqs = sorted(int(row[0]) for row in rows)
-    merged = _merged_audit_spans(spans)
+    merged = _merged_audit_spans([(start, end) for start, end, _, _ in spans])
+    audited_total = sum(count for _, _, _, count in spans)
+    missing_total = 0
     previous: int | None = None
     for seq in seqs:
         if seq == previous:
@@ -406,8 +435,9 @@ def _session_gap_is_explained(
             run_start, run_end = previous + 1, seq - 1
             if not any(start <= run_start and run_end <= end for start, end in merged):
                 return False
+            missing_total += run_end - run_start + 1
         previous = seq
-    return True
+    return missing_total <= audited_total
 
 
 def review_reasons(review: DatabaseReview, logs: LogSummary | None) -> list[str]:

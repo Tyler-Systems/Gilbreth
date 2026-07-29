@@ -886,15 +886,25 @@ impl GilbrethStore {
             let performed_at = unix_now_ms();
             let tx = self.conn.transaction()?;
             let mut audit = DeletionAuditAggregate::default();
-            delete_returning_audit(
+            delete_returning_audit_batched(
                 &tx,
-                "DELETE FROM action_events WHERE ts < ?1 RETURNING session_id, seq",
+                &format!(
+                    "DELETE FROM action_events WHERE rowid IN (
+                         SELECT rowid FROM action_events WHERE ts < ?1
+                         LIMIT {PRUNE_RETURNING_BATCH}
+                     ) RETURNING session_id, seq"
+                ),
                 [cutoff_ms],
                 &mut audit,
             )?;
-            let events_deleted = delete_returning_audit(
+            let events_deleted = delete_returning_audit_batched(
                 &tx,
-                "DELETE FROM events WHERE ts < ?1 RETURNING session_id, seq",
+                &format!(
+                    "DELETE FROM events WHERE rowid IN (
+                         SELECT rowid FROM events WHERE ts < ?1
+                         LIMIT {PRUNE_RETURNING_BATCH}
+                     ) RETURNING session_id, seq"
+                ),
                 [cutoff_ms],
                 &mut audit,
             )?;
@@ -913,17 +923,20 @@ impl GilbrethStore {
             )?;
             // Orphan sweep deletes regardless of ts, so it must feed the
             // audit too — a mirrored ts predicate would under-count it.
-            delete_returning_audit(
+            delete_returning_audit_batched(
                 &tx,
-                "
-                DELETE FROM action_events
-                WHERE NOT EXISTS (
-                    SELECT 1
-                    FROM record_sessions
-                    WHERE record_sessions.record_session_id = action_events.record_session_id
-                )
-                RETURNING session_id, seq
-                ",
+                &format!(
+                    "DELETE FROM action_events WHERE rowid IN (
+                         SELECT rowid FROM action_events
+                         WHERE NOT EXISTS (
+                             SELECT 1
+                             FROM record_sessions
+                             WHERE record_sessions.record_session_id =
+                                 action_events.record_session_id
+                         )
+                         LIMIT {PRUNE_RETURNING_BATCH}
+                     ) RETURNING session_id, seq"
+                ),
                 [],
                 &mut audit,
             )?;
@@ -4403,6 +4416,36 @@ fn delete_returning_audit<P: rusqlite::Params>(
     Ok(deleted)
 }
 
+/// SQLite materializes a statement's entire RETURNING result set before the
+/// first row is read, so one unbounded prune DELETE would buffer every
+/// deleted (session_id, seq) pair at once. Callers embed this LIMIT in a
+/// `rowid IN (SELECT rowid ... LIMIT N)` shape and loop via
+/// `delete_returning_audit_batched`: same single-transaction atomicity,
+/// bounded accumulation per statement.
+const PRUNE_RETURNING_BATCH: i64 = 20_000;
+
+/// Repeat a LIMIT-bounded `DELETE ... RETURNING session_id, seq` until it
+/// deletes fewer rows than [`PRUNE_RETURNING_BATCH`], inside the caller's
+/// transaction. The SQL must carry the LIMIT; see the const above.
+fn delete_returning_audit_batched<P>(
+    conn: &Connection,
+    sql: &str,
+    params: P,
+    aggregate: &mut DeletionAuditAggregate,
+) -> Result<usize, StoreError>
+where
+    P: rusqlite::Params + Clone,
+{
+    let mut total = 0;
+    loop {
+        let deleted = delete_returning_audit(conn, sql, params.clone(), aggregate)?;
+        total += deleted;
+        if deleted < PRUNE_RETURNING_BATCH as usize {
+            return Ok(total);
+        }
+    }
+}
+
 /// Write the operation's audit rows in the same transaction as its deletes:
 /// one row per affected session, counts and seq span only (value-free; see
 /// migration 008). A database without the table yet — a dashboard opened
@@ -4462,9 +4505,14 @@ fn delete_recording_rows(conn: &Connection, record_session_id: i64) -> Result<us
 
     let performed_at = unix_now_ms();
     let mut audit = DeletionAuditAggregate::default();
-    delete_returning_audit(
+    delete_returning_audit_batched(
         conn,
-        "DELETE FROM action_events WHERE record_session_id = ?1 RETURNING session_id, seq",
+        &format!(
+            "DELETE FROM action_events WHERE rowid IN (
+                 SELECT rowid FROM action_events WHERE record_session_id = ?1
+                 LIMIT {PRUNE_RETURNING_BATCH}
+             ) RETURNING session_id, seq"
+        ),
         [record_session_id],
         &mut audit,
     )?;
@@ -4511,17 +4559,27 @@ fn prune_old_event_rows(
     let mut selector_paths_deleted = 0;
 
     if has_record_routine {
-        action_events_deleted += delete_returning_audit(
+        action_events_deleted += delete_returning_audit_batched(
             conn,
-            "DELETE FROM action_events WHERE ts < ?1 RETURNING session_id, seq",
+            &format!(
+                "DELETE FROM action_events WHERE rowid IN (
+                     SELECT rowid FROM action_events WHERE ts < ?1
+                     LIMIT {PRUNE_RETURNING_BATCH}
+                 ) RETURNING session_id, seq"
+            ),
             [cutoff_ms],
             &mut audit,
         )?;
     }
 
-    let events_deleted = delete_returning_audit(
+    let events_deleted = delete_returning_audit_batched(
         conn,
-        "DELETE FROM events WHERE ts < ?1 RETURNING session_id, seq",
+        &format!(
+            "DELETE FROM events WHERE rowid IN (
+                 SELECT rowid FROM events WHERE ts < ?1
+                 LIMIT {PRUNE_RETURNING_BATCH}
+             ) RETURNING session_id, seq"
+        ),
         [cutoff_ms],
         &mut audit,
     )?;
@@ -4542,18 +4600,20 @@ fn prune_old_event_rows(
             [cutoff_ms],
         )?;
         // Orphan sweep deletes regardless of ts — it must feed the audit.
-        action_events_deleted += delete_returning_audit(
+        action_events_deleted += delete_returning_audit_batched(
             conn,
-            "
-            DELETE FROM action_events
-            WHERE NOT EXISTS (
-                SELECT 1
-                FROM record_sessions
-                WHERE record_sessions.record_session_id =
-                      action_events.record_session_id
-            )
-            RETURNING session_id, seq
-            ",
+            &format!(
+                "DELETE FROM action_events WHERE rowid IN (
+                     SELECT rowid FROM action_events
+                     WHERE NOT EXISTS (
+                         SELECT 1
+                         FROM record_sessions
+                         WHERE record_sessions.record_session_id =
+                             action_events.record_session_id
+                     )
+                     LIMIT {PRUNE_RETURNING_BATCH}
+                 ) RETURNING session_id, seq"
+            ),
             [],
             &mut audit,
         )?;
@@ -9383,6 +9443,41 @@ mod tests {
         store
             .insert_events(&[first.clone(), second.clone()])
             .expect("events inserted");
+        // Both action_events passes must feed the audit: seq 10 goes in the
+        // ts-pass (its still-open recording keeps record_sessions row 20
+        // alive), seq 11 goes in the orphan sweep (record_session 999 does
+        // not exist; its ts is inside the window, so only the sweep takes it).
+        store
+            .connection()
+            .execute_batch("PRAGMA foreign_keys = OFF;")
+            .expect("allow the orphan fixture row");
+        insert_record_routine_rows(
+            store.connection(),
+            RecordRoutineFixture {
+                request_id: 10,
+                record_session_id: 20,
+                selector_id: 30,
+                session_id: old_session,
+                seq: 10,
+                action_ts: 2_000,
+                record_ended_ts: None,
+                request_expires_at: 90_000,
+                selector_hash: "hash-retention",
+            },
+        );
+        store
+            .connection()
+            .execute(
+                "
+                INSERT INTO action_events (
+                    session_id, seq, ts, action_type, pattern_action, selector_id,
+                    trust_basis, exe, record_session_id, payload
+                )
+                VALUES (?1, 11, 9000, 'invoke', 'invoke', 30, 'pid_match', 'app.exe', 999, '{}')
+                ",
+                [old_session],
+            )
+            .expect("orphan action row inserted");
 
         let report = store.prune_old_activity(5_000).expect("retention prune");
 
@@ -9392,11 +9487,16 @@ mod tests {
             vec![AuditRow {
                 kind: DELETION_AUDIT_KIND_STARTUP_RETENTION.to_string(),
                 session_id: old_session,
-                rows_deleted: 2,
+                rows_deleted: 4,
                 seq_min: u64_to_i64(first.seq),
-                seq_max: u64_to_i64(second.seq),
+                seq_max: 11,
                 cutoff_ms: Some(5_000),
             }]
+        );
+        assert_eq!(
+            row_count(store.connection(), "action_events"),
+            0,
+            "the ts-pass and the orphan sweep both ran"
         );
     }
 

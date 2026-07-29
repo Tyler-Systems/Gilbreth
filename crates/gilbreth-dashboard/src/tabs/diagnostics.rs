@@ -173,6 +173,48 @@ pub fn health_reasons(health: &DatabaseHealth, logs: &LogReview) -> Vec<String> 
     reasons
 }
 
+/// The three-arm Seq continuity wording, byte-for-byte review_run's
+/// `format_report` seq_status: unexplained gaps flag; gaps covered by
+/// recorded deletions (migration 008) read as known.
+fn seq_continuity_status(health: &DatabaseHealth) -> String {
+    let joined = |sessions: &[i64]| {
+        sessions
+            .iter()
+            .map(|value| value.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let explained_note = format!(
+        "gaps in sessions {} explained by recorded deletions",
+        joined(&health.explained_gap_sessions)
+    );
+    if !health.seq_gap_sessions.is_empty() {
+        let mut status = format!("gaps in sessions {}", joined(&health.seq_gap_sessions));
+        if !health.explained_gap_sessions.is_empty() {
+            status.push_str(&format!("; {explained_note}"));
+        }
+        status
+    } else if !health.explained_gap_sessions.is_empty() {
+        format!("ok ({explained_note})")
+    } else {
+        "ok".to_string()
+    }
+}
+
+/// review_run's "Recorded deletions: N rows" line as a check row; absent on
+/// a pre-008 database, matching the script's skip-the-line behavior.
+fn recorded_deletions_row(health: &DatabaseHealth) -> Option<CheckRow> {
+    health
+        .deletion_audit_rows_deleted
+        .map(|rows_deleted| CheckRow {
+            label: "Recorded deletions".to_string(),
+            value: format!("{rows_deleted} rows"),
+            tick: rows_deleted == 0,
+            dim: rows_deleted > 0,
+            ..Default::default()
+        })
+}
+
 /// One red-pencil flag row: the bold finding, the plain-language read, and
 /// the evidence sentence in muted text.
 struct Finding {
@@ -596,37 +638,7 @@ fn health_check_section(ui: &mut egui::Ui, health: &DatabaseHealth, logs: &LogRe
         |ui| {
             let integrity_ok = health.integrity_check == "ok";
             let fk_seq_ok = health.foreign_key_issues == 0 && health.seq_gap_sessions.is_empty();
-            // The three-arm wording review_run's Seq continuity line uses:
-            // unexplained gaps flag, gaps covered by recorded deletions
-            // (migration 008) read as known.
-            let explained_note = format!(
-                "gaps in sessions {} explained by recorded deletions",
-                health
-                    .explained_gap_sessions
-                    .iter()
-                    .map(|value| value.to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            );
-            let seq_status = if !health.seq_gap_sessions.is_empty() {
-                let mut status = format!(
-                    "gaps in sessions {}",
-                    health
-                        .seq_gap_sessions
-                        .iter()
-                        .map(|value| value.to_string())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                );
-                if !health.explained_gap_sessions.is_empty() {
-                    status.push_str(&format!("; {explained_note}"));
-                }
-                status
-            } else if !health.explained_gap_sessions.is_empty() {
-                format!("ok ({explained_note})")
-            } else {
-                "ok".to_string()
-            };
+            let seq_status = seq_continuity_status(health);
             let drops_value = if health.capture_events_dropped < 0 {
                 "unparseable".to_string()
             } else {
@@ -692,17 +704,9 @@ fn health_check_section(ui: &mut egui::Ui, health: &DatabaseHealth, logs: &LogRe
                     ..Default::default()
                 },
             ];
-            // Same placement as review_run's "Recorded deletions: N rows"
-            // line; the row is absent on a pre-008 database, matching the
-            // script's skip-the-line behavior.
-            if let Some(rows_deleted) = health.deletion_audit_rows_deleted {
-                rows.push(CheckRow {
-                    label: "Recorded deletions".to_string(),
-                    value: format!("{rows_deleted} rows"),
-                    tick: rows_deleted == 0,
-                    dim: rows_deleted > 0,
-                    ..Default::default()
-                });
+            // Same placement as review_run's "Recorded deletions: N rows".
+            if let Some(row) = recorded_deletions_row(health) {
+                rows.push(row);
             }
             if let Some(known) = known {
                 rows.push(CheckRow {
@@ -1307,6 +1311,51 @@ mod tests {
                 "log errors/panics=2".to_string(),
                 "max events skipped=5".to_string(),
             ]
+        );
+    }
+
+    #[test]
+    fn seq_continuity_status_matches_review_run_three_arm_wording() {
+        let (health, _) = healthy_fixture();
+        assert_eq!(seq_continuity_status(&health), "ok");
+
+        let mut health = health;
+        health.explained_gap_sessions = vec![2];
+        assert_eq!(
+            seq_continuity_status(&health),
+            "ok (gaps in sessions 2 explained by recorded deletions)"
+        );
+
+        health.seq_gap_sessions = vec![4, 7];
+        assert_eq!(
+            seq_continuity_status(&health),
+            "gaps in sessions 4, 7; gaps in sessions 2 explained by recorded deletions"
+        );
+
+        health.explained_gap_sessions = Vec::new();
+        assert_eq!(seq_continuity_status(&health), "gaps in sessions 4, 7");
+    }
+
+    #[test]
+    fn recorded_deletions_row_mirrors_review_run_line_and_pre_008_absence() {
+        let (health, _) = healthy_fixture();
+        let row = recorded_deletions_row(&health).expect("post-008 shows the row");
+        assert_eq!(row.label, "Recorded deletions");
+        assert_eq!(row.value, "0 rows");
+        assert!(row.tick);
+        assert!(!row.dim);
+
+        let mut health = health;
+        health.deletion_audit_rows_deleted = Some(42);
+        let row = recorded_deletions_row(&health).expect("counted row");
+        assert_eq!(row.value, "42 rows");
+        assert!(!row.tick);
+        assert!(row.dim);
+
+        health.deletion_audit_rows_deleted = None;
+        assert!(
+            recorded_deletions_row(&health).is_none(),
+            "a pre-008 database skips the line, like review_run"
         );
     }
 
