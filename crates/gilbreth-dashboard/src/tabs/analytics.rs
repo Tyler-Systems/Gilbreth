@@ -343,7 +343,7 @@ fn rhythms_section(ui: &mut egui::Ui, data: &AnalyticsData) {
             ));
             if let Some(p90) = rhythm.typing_burst_wpm_p90 {
                 gauges.push((
-                    "Typing burst, p90",
+                    "Typing burst, top 10%",
                     format!("{p90:.0}"),
                     Some("wpm".to_string()),
                 ));
@@ -359,6 +359,16 @@ fn rhythms_section(ui: &mut egui::Ui, data: &AnalyticsData) {
         ));
     }
     widgets::gauge_tiles_suffixed(ui, &gauges, 4);
+    widgets::insight_lines(
+        ui,
+        &[
+            "The top-10% burst pace is quick for you, not a typing norm.",
+            "Input rate and speed carry only weak signal about attention or focus \
+             (Fogarty et al., TOCHI 2005), so there is no single activity score here.",
+            "Friction windows compare each hour to your own recent history: descriptive \
+             clusters, not a quality rating.",
+        ],
+    );
 
     summary_section(
         ui,
@@ -387,19 +397,14 @@ fn rhythms_section(ui: &mut egui::Ui, data: &AnalyticsData) {
                      glow brighter, like a long exposure.",
                     "Typing burst rate clusters key presses with gaps of 2 seconds or less, \
                      counts only printable keys (so backspacing and arrow keys don't inflate \
-                     it), and reports words per minute by the chars-divided-by-5 convention. \
-                     The p90 is your faster bursts: quick for you.",
+                     it), and reports words per minute by the chars-divided-by-5 convention.",
                     "Mouse speed is distance over duration per movement sample, with \
                      software-KVM / relayed input excluded. Pixel speeds are DPI- and \
                      monitor-relative, so they are within-user only.",
-                    "Friction windows compare each hour to other hours in your own recent \
-                     history; they are descriptive clusters, not a quality rating.",
                     "Raw movement rows are kept for a bounded window (default 30 days; \
                      `privacy.mouse_move_retention_days`), so mouse-speed and moves-per-hour \
                      lenses see at most that far back. Keys, clicks, and scrolls keep the full \
                      retention window.",
-                    "Input rate and speed carry only weak signal about attention or focus \
-                     (Fogarty et al., TOCHI 2005), so there is no single 'activity score' here.",
                 ],
             );
             if rhythm.typing_burst_count > 0 {
@@ -614,6 +619,14 @@ fn focus_section(ui: &mut egui::Ui, data: &AnalyticsData) {
         ),
     ];
     widgets::gauge_tiles_capped(ui, &gauges, 5);
+    widgets::insight_lines(
+        ui,
+        &[
+            "Mark et al.'s famous ~25m resume figure measures wall-clock working spheres; \
+             Gilbreth reports active app-focus time, so the numbers are not directly \
+             comparable.",
+        ],
+    );
     summary_section(
         ui,
         "analytics-focus-detail",
@@ -631,9 +644,6 @@ fn focus_section(ui: &mut egui::Ui, data: &AnalyticsData) {
                      seconds to reduce tab-through noise, following the Iqbal & Horvitz \
                      desktop-log filtering heuristic. Raw per-app median runs remain in the \
                      table.",
-                    "Mark et al.'s ~25m resume figure is a wall-clock working-sphere result; \
-                     Gilbreth reports active app-focus diversion time, so the numbers are not \
-                     directly comparable.",
                     "Returns to anchor app count first returns on merged active-focus runs \
                      (active time), a different measurement than the 'You keep leaving and \
                      returning to ...' cards above, which count round trips on wall-clock \
@@ -688,6 +698,15 @@ fn interruption_section(ui: &mut egui::Ui, data: &AnalyticsData) {
         ),
     ];
     gauge_tiles(ui, &gauges);
+    widgets::insight_lines(
+        ui,
+        &[
+            "In a field study of information workers, people averaged about three minutes \
+             on a task before switching (González & Mark, CHI 2004).",
+            "Trips overlap and nest, so time away in diversions can exceed the period's \
+             active time.",
+        ],
+    );
     summary_section(
         ui,
         "analytics-interruption-detail",
@@ -706,11 +725,7 @@ fn interruption_section(ui: &mut egui::Ui, data: &AnalyticsData) {
                      toll is round trips times the median restart; the median keeps long \
                      passive returns (reading, watching) from dominating the estimate.",
                     "Time away in diversions adds up active time spent elsewhere during these \
-                     round trips. Trips overlap and nest, so this total can exceed the \
-                     period's active time.",
-                    "For context: in a field study of information workers, people averaged \
-                     about three minutes on a task before switching (González & Mark, CHI \
-                     2004).",
+                     round trips.",
                 ],
             );
             if costs.estimated_restart_minutes.is_some() {
@@ -734,10 +749,9 @@ fn interruption_section(ui: &mut egui::Ui, data: &AnalyticsData) {
 fn input_load_section(ui: &mut egui::Ui, data: &AnalyticsData) {
     let exposure = &data.input_exposure;
     section_kicker(ui, "INPUT LOAD");
-    caption(
-        ui,
-        "Exposure proxy from input-activity logs; not a medical or RSI assessment.",
-    );
+    // The 2026-07-28 walk: the face caption was redundant with the
+    // methodology bullets; the medical boundary stays as the lead bullet
+    // in Details (the disclaimers-stay rule), just not in the headline.
     if exposure.total_input_events == 0 {
         info_box(ui, NO_INPUT_INFO);
         return;
@@ -780,6 +794,14 @@ fn input_load_section(ui: &mut egui::Ui, data: &AnalyticsData) {
         ),
     ];
     gauge_tiles(ui, &gauges);
+    widgets::insight_lines(
+        ui,
+        &[
+            "Microbreak research found the greatest benefit at about every 20 minutes \
+             (McLean et al., 2001); we suggest short breaks roughly every 20-30 min.",
+            "Treat the population bands as soft context, not a personal risk score.",
+        ],
+    );
     summary_section(
         ui,
         "analytics-input-detail",
@@ -791,6 +813,8 @@ fn input_load_section(ui: &mut egui::Ui, data: &AnalyticsData) {
             bullet_list(
                 ui,
                 &[
+                    "This is an exposure proxy from input-activity logs; it is not a medical \
+                     or RSI assessment.",
                     "Active input time = key/mouse activity intersected with foreground focus, \
                      after idle, sleep, and recovered-power gaps are removed.",
                     "Breaks are only pauses of 3 minutes or more, so brief micro-pauses are \
@@ -799,13 +823,9 @@ fn input_load_section(ui: &mut egui::Ui, data: &AnalyticsData) {
                      musculoskeletal factors are not visible to Gilbreth.",
                     "Software-KVM / relayed mouse input is excluded.",
                     "Exposure associations are strongest for self-reported time; measured time \
-                     like this shows weaker links, so treat the bands as soft population \
-                     context.",
+                     like this shows weaker links.",
                     "Population bands: over 4h per day is the elevated band, over 6h the high \
-                     band. Population context only, not a personal risk score (Health Council \
-                     of the Netherlands, 2012).",
-                    "Microbreak research found the greatest benefit at about every 20 minutes \
-                     (McLean et al., 2001); we suggest short breaks roughly every 20-30 min.",
+                     band (Health Council of the Netherlands, 2012).",
                 ],
             );
             if !exposure.breakdown.is_empty() {
@@ -954,23 +974,48 @@ fn episodes_section(
                 .color(theme::SILVER)
                 .font(FontId::new(12.5, theme::family_medium())),
         );
-        let headers = ["When", "Name", "Active", "Switches"];
-        let rows: Vec<Vec<String>> = longest
-            .iter()
-            .map(|episode| {
-                let name = episode
-                    .sphere
-                    .clone()
-                    .unwrap_or_else(|| episode.dominant_app.clone());
-                vec![
-                    format!("{} {}", episode.local_date, local_clock(episode.start_ms)),
-                    ellipsize(&name, 48),
-                    format_duration_ms(episode.active_ms),
-                    thousands(episode.switch_count),
-                ]
-            })
-            .collect();
-        data_table(ui, "analytics-episodes-longest", &headers, &rows);
+        // An in-section summary, not a Tables-view export surface: body
+        // typography and no scroll area — the name column is clamped so
+        // the grid always fits the card (the 2026-07-28 walk).
+        egui::Grid::new("analytics-episodes-longest")
+            .spacing(egui::vec2(18.0, 3.0))
+            .show(ui, |ui| {
+                for header in ["When", "Name", "Active", "Switches"] {
+                    ui.label(RichText::new(header).color(theme::GRAY).size(11.5));
+                }
+                ui.end_row();
+                for episode in &longest {
+                    let name = episode
+                        .sphere
+                        .clone()
+                        .unwrap_or_else(|| episode.dominant_app.clone());
+                    ui.label(
+                        RichText::new(format!(
+                            "{} {}",
+                            episode.local_date,
+                            local_clock(episode.start_ms)
+                        ))
+                        .color(theme::SILVER_DIM)
+                        .size(12.5),
+                    );
+                    ui.label(
+                        RichText::new(ellipsize(&name, 40))
+                            .color(theme::SILVER)
+                            .size(12.5),
+                    );
+                    ui.label(
+                        RichText::new(format_duration_ms(episode.active_ms))
+                            .color(theme::SILVER_DIM)
+                            .size(12.5),
+                    );
+                    ui.label(
+                        RichText::new(thousands(episode.switch_count))
+                            .color(theme::SILVER_DIM)
+                            .size(12.5),
+                    );
+                    ui.end_row();
+                }
+            });
     }
     summary_section(
         ui,
@@ -1004,6 +1049,7 @@ fn episodes_section(
         |ui| match &data.sphere_overlay {
             Some(overlay) => {
                 rename_merge_controls(ui, view, data, overlay, actions);
+                ui.add_space(6.0);
                 if widgets::small_button(ui, "Turn off names from titles") {
                     actions.push(AnalyticsAction::SetOverlayEnabled(false));
                 }
@@ -1102,9 +1148,11 @@ fn rename_merge_controls(
         if !tokens.iter().any(|(token, _)| *token == selected) {
             selected = tokens[0].0.clone();
         }
-        // UX-23: wrapped row + clamps so the 240 px combo and 220 px
-        // name field fold instead of overflowing a narrow window.
+        // UX-23: wrapped row + clamps so the combo and name field fold
+        // instead of overflowing a narrow window.
+        ui.add_space(4.0);
         ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 10.0;
             let filter_id = ui.id().with("sphere-token-filter");
             egui::ComboBox::from_id_salt("sphere-alias-token")
                 // Title-derived labels can be sentence-long; the button
@@ -1154,11 +1202,18 @@ fn rename_merge_controls(
             let mut name: String = ui
                 .ctx()
                 .data_mut(|store| store.get_temp(buffer_id).unwrap_or(current));
-            ui.add(
-                egui::TextEdit::singleline(&mut name)
-                    .hint_text(SPHERE_NAME_HINT)
-                    .desired_width(220.0_f32.min(ui.available_width().max(120.0))),
-            );
+            // A resting TextEdit inherits no border from the dark theme
+            // and read as plain text beside the combo; a visible stroke
+            // makes it an obvious input (the 2026-07-28 walk).
+            ui.scope(|ui| {
+                ui.style_mut().visuals.widgets.inactive.bg_stroke =
+                    egui::Stroke::new(1.0, theme::GRAY);
+                ui.add(
+                    egui::TextEdit::singleline(&mut name)
+                        .hint_text(SPHERE_NAME_HINT)
+                        .desired_width(260.0_f32.min(ui.available_width().max(120.0))),
+                );
+            });
             ui.ctx()
                 .data_mut(|store| store.insert_temp(buffer_id, name.clone()));
             if widgets::small_button(ui, "Save name") {

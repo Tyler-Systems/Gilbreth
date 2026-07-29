@@ -210,6 +210,20 @@ pub fn bullet_list(ui: &mut egui::Ui, bullets: &[&str]) {
     }
 }
 
+/// The always-visible insight strip (owner pick, 2026-07-28 walk): the
+/// lines worth reading sit above the methodology expander instead of
+/// inside it — brass-marked and body-bright so they never scan as fine
+/// print. Details keeps the how-it-is-computed bullets.
+pub fn insight_lines(ui: &mut egui::Ui, lines: &[&str]) {
+    for line in lines {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new("•").color(theme::BRASS).size(12.5));
+            ui.label(RichText::new(*line).color(theme::SILVER).size(12.5));
+        });
+    }
+    ui.add_space(2.0);
+}
+
 pub fn explainer(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui)) {
     egui::CollapsingHeader::new(RichText::new(title).color(theme::GRAY).size(12.0))
         .default_open(false)

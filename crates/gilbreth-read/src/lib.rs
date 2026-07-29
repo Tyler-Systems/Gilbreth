@@ -10727,6 +10727,73 @@ mod tests {
         assert_eq!(records[0].destination, "browser.exe");
     }
 
+    /// Opt-in timing diagnosis over a real database: point
+    /// GILBRETH_TIMING_DB at a .db path (opened read-only) and run
+    /// `cargo test -p gilbreth-read --release -- --ignored reader_timings --nocapture`.
+    /// Prints per-reader wall times for the Analytics snapshot's reader
+    /// stack at the last-7-days scope. A diagnosis tool, never a gate.
+    #[test]
+    #[ignore = "opt-in timing diagnosis; needs GILBRETH_TIMING_DB"]
+    fn analytics_reader_timings_over_env_db() {
+        use std::time::Instant;
+
+        let Some(path) = std::env::var_os("GILBRETH_TIMING_DB") else {
+            eprintln!("GILBRETH_TIMING_DB unset; nothing to time");
+            return;
+        };
+        let conn = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .expect("timing db opens read-only");
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_millis() as i64;
+        let scope = Scope {
+            cutoff_ms: Some(now_ms - 7 * 86_400_000),
+            session_id: None,
+        };
+        let whole = Instant::now();
+        macro_rules! time_reader {
+            ($label:expr, $call:expr) => {{
+                let started = Instant::now();
+                let _ = $call.expect($label);
+                eprintln!("{:<26} {:>10.1?}", $label, started.elapsed());
+            }};
+        }
+        time_reader!("focus_rollup", focus_rollup(&conn, &scope));
+        time_reader!("focus_minutes_total", focus_minutes_total(&conn, &scope));
+        time_reader!(
+            "active_focus_minutes",
+            active_focus_minutes_total(&conn, &scope)
+        );
+        time_reader!("session_analytics", session_analytics(&conn, &scope));
+        time_reader!("input_rollup", input_rollup(&conn, &scope));
+        time_reader!("window_lifecycle", window_lifecycle_rollup(&conn, &scope));
+        time_reader!(
+            "patterns_worth_reviewing",
+            patterns_worth_reviewing(&conn, &scope)
+        );
+        time_reader!("pattern_history_days", pattern_history_days(&conn, &scope));
+        time_reader!(
+            "fragmentation_metrics",
+            fragmentation_metrics(&conn, &scope)
+        );
+        time_reader!("interruption_costs", interruption_costs(&conn, &scope));
+        time_reader!(
+            "input_exposure_metrics",
+            input_exposure_metrics(&conn, &scope)
+        );
+        time_reader!(
+            "working_spheres_skeleton",
+            working_spheres_skeleton(&conn, &scope)
+        );
+        time_reader!(
+            "working_spheres_overlay",
+            working_spheres_overlay(&conn, &scope, &HashMap::new())
+        );
+        time_reader!("rhythm_metrics", rhythm_metrics(&conn, &scope, now_ms));
+        eprintln!("{:<26} {:>10.1?}", "WHOLE STACK", whole.elapsed());
+    }
+
     fn health_fixture_db() -> Connection {
         let conn = Connection::open_in_memory().expect("in-memory db");
         conn.execute_batch(
