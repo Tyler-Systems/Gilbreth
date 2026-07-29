@@ -1394,7 +1394,8 @@ pub fn input_runs(conn: &Connection, scope: &Scope) -> rusqlite::Result<Vec<Inpu
                 COALESCE(NULLIF(e.exe, ''), '(unknown)') AS exe
          FROM events e
          WHERE {input_predicate}
-           AND {where_clause}"
+           AND {where_clause}
+         ORDER BY e.session_id, e.seq"
     );
     let mut stmt = conn.prepare(&sql)?;
     let mut rows = stmt.query(rusqlite::params_from_iter(params))?;
@@ -1438,7 +1439,16 @@ pub fn input_runs(conn: &Connection, scope: &Scope) -> rusqlite::Result<Vec<Inpu
         );
     }
 
-    events.sort_by_key(|event| (event.session_id, event.seq));
+    // run_ms and start_local_date are derived from min/max_ts, so they are
+    // stamped once per completed run here — computing the local calendar
+    // date per event made the sweep the slowest reader (a timezone
+    // conversion and a string per row at 1M events).
+    fn finalize(mut run: InputRun) -> InputRun {
+        run.run_ms = (run.max_ts - run.min_ts).max(0);
+        run.start_local_date = local_date(run.min_ts);
+        run
+    }
+
     let mut runs: Vec<InputRun> = Vec::new();
     let mut current: Option<InputRun> = None;
     let mut prev_session: Option<i64> = None;
@@ -1465,12 +1475,13 @@ pub fn input_runs(conn: &Connection, scope: &Scope) -> rusqlite::Result<Vec<Inpu
                 run.min_ts = run.min_ts.min(event.ts);
                 run.max_ts = run.max_ts.max(event.ts);
                 run.event_count += 1;
-                if !run.exe_counts.contains_key(&event.exe) {
+                // One clone per newly seen exe, not per event.
+                if let Some(count) = run.exe_counts.get_mut(&event.exe) {
+                    *count += 1;
+                } else {
                     run.exe_order.push(event.exe.clone());
+                    run.exe_counts.insert(event.exe, 1);
                 }
-                *run.exe_counts.entry(event.exe.clone()).or_insert(0) += 1;
-                run.run_ms = (run.max_ts - run.min_ts).max(0);
-                run.start_local_date = local_date(run.min_ts);
                 prev_session = Some(event.session_id);
                 prev_ts = Some(event.ts);
                 continue;
@@ -1478,8 +1489,10 @@ pub fn input_runs(conn: &Connection, scope: &Scope) -> rusqlite::Result<Vec<Inpu
         }
 
         if let Some(run) = current.take() {
-            runs.push(run);
+            runs.push(finalize(run));
         }
+        prev_session = Some(event.session_id);
+        prev_ts = Some(event.ts);
         let mut exe_counts = BTreeMap::new();
         exe_counts.insert(event.exe.clone(), 1);
         current = Some(InputRun {
@@ -1488,15 +1501,13 @@ pub fn input_runs(conn: &Connection, scope: &Scope) -> rusqlite::Result<Vec<Inpu
             max_ts: event.ts,
             event_count: 1,
             exe_counts,
-            exe_order: vec![event.exe.clone()],
+            exe_order: vec![event.exe],
             run_ms: 0,
-            start_local_date: local_date(event.ts),
+            start_local_date: String::new(),
         });
-        prev_session = Some(event.session_id);
-        prev_ts = Some(event.ts);
     }
     if let Some(run) = current {
-        runs.push(run);
+        runs.push(finalize(run));
     }
     Ok(runs)
 }
@@ -10470,6 +10481,146 @@ mod tests {
 
         let violations = copy_style::audit_crate_src("gilbreth-read", env!("CARGO_MANIFEST_DIR"));
         copy_style::assert_no_violations(&violations);
+    }
+
+    /// The reliability-item reader budget. The retired Python
+    /// `read_input_exposure_metrics` measured ~4.6 s over a 1M-event
+    /// database — the slowest reader, against peers near 1.5 s. This pins
+    /// the Rust reader to the peer budget on a same-shape file-backed
+    /// fixture (real schema subset: the `UNIQUE(session_id, seq)` index
+    /// the sweep orders by, the analytics index, JSON payloads the
+    /// predicate extracts). Fixture generation costs a few seconds and
+    /// the number only means anything in release, so the test is ignored
+    /// by default; run it explicitly:
+    /// `cargo test -p gilbreth-read --release -- --ignored million_event --nocapture`
+    #[test]
+    #[ignore = "1M-event perf budget; run explicitly with --release"]
+    fn input_exposure_metrics_holds_the_million_event_budget() {
+        use std::time::{Duration, Instant};
+
+        const TOTAL_ROWS: i64 = 1_000_000;
+        const SESSIONS: i64 = 5;
+        const MILLION_EVENT_BUDGET: Duration = Duration::from_millis(1_500);
+        const EXES: [&str; 8] = [
+            "editor.exe",
+            "browser.exe",
+            "terminal.exe",
+            "mail.exe",
+            "chat.exe",
+            "player.exe",
+            "notes.exe",
+            "builder.exe",
+        ];
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("million.db");
+        let conn = Connection::open(&path).expect("fixture db opens");
+        conn.execute_batch(
+            "PRAGMA journal_mode = WAL;
+             CREATE TABLE sessions (
+                 session_id INTEGER PRIMARY KEY,
+                 started_at INTEGER NOT NULL,
+                 ended_at INTEGER
+             );
+             CREATE TABLE events (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 session_id INTEGER NOT NULL,
+                 seq INTEGER NOT NULL,
+                 ts INTEGER NOT NULL,
+                 source TEXT NOT NULL,
+                 kind TEXT NOT NULL,
+                 exe TEXT,
+                 prev_exe TEXT,
+                 title TEXT,
+                 prev_title TEXT,
+                 pid INTEGER,
+                 key TEXT,
+                 duration_ms INTEGER,
+                 mod_shift INTEGER NOT NULL DEFAULT 0,
+                 mod_ctrl INTEGER NOT NULL DEFAULT 0,
+                 mod_alt INTEGER NOT NULL DEFAULT 0,
+                 mod_win INTEGER NOT NULL DEFAULT 0,
+                 button TEXT,
+                 payload TEXT NOT NULL DEFAULT '{}',
+                 is_sensitive INTEGER NOT NULL DEFAULT 0,
+                 UNIQUE(session_id, seq)
+             );
+             CREATE INDEX idx_events_session_kind_ts_id
+                 ON events(session_id, kind, ts, id);",
+        )
+        .expect("fixture schema");
+
+        let rows_per_session = TOTAL_ROWS / SESSIONS;
+        conn.execute_batch("BEGIN").expect("fixture tx begins");
+        {
+            let mut session_stmt = conn
+                .prepare(
+                    "INSERT INTO sessions (session_id, started_at, ended_at) VALUES (?1, ?2, ?3)",
+                )
+                .expect("session insert prepares");
+            let mut event_stmt = conn
+                .prepare(
+                    "INSERT INTO events
+                         (session_id, seq, ts, source, kind, exe, prev_exe, duration_ms)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                )
+                .expect("event insert prepares");
+            for session in 0..SESSIONS {
+                let session_id = session + 1;
+                let session_start = 1_000_000 + session * 400_000_000;
+                let mut ts = session_start;
+                for index in 0..rows_per_session {
+                    let exe = EXES[(index as usize / 37) % EXES.len()];
+                    let prev_exe = EXES[(index as usize / 37 + 1) % EXES.len()];
+                    let (source, kind, duration): (&str, &str, Option<i64>) = if index % 4_999 == 0
+                    {
+                        // A sparse idle/active pair breaks runs the way
+                        // real capture does.
+                        ts += 180_000;
+                        ("system", "idle", Some(180_000))
+                    } else if index % 4_999 == 1 {
+                        ("system", "active", None)
+                    } else {
+                        match index % 20 {
+                            0..=7 => ("mouse", "mouse_move", None),
+                            8..=12 => ("keyboard", "key", None),
+                            13..=15 => ("mouse", "mouse_click", None),
+                            16 => ("mouse", "mouse_wheel", None),
+                            _ => ("system", "focus_changed", Some(4_000)),
+                        }
+                    };
+                    event_stmt
+                        .execute(rusqlite::params![
+                            session_id, index, ts, source, kind, exe, prev_exe, duration
+                        ])
+                        .expect("fixture row inserts");
+                    ts += 700;
+                }
+                session_stmt
+                    .execute(rusqlite::params![session_id, session_start, ts + 1_000])
+                    .expect("fixture session inserts");
+            }
+        }
+        conn.execute_batch("COMMIT").expect("fixture tx commits");
+
+        let scope = Scope {
+            cutoff_ms: None,
+            session_id: None,
+        };
+        let started = Instant::now();
+        let metrics = input_exposure_metrics(&conn, &scope).expect("reader runs");
+        let elapsed = started.elapsed();
+        eprintln!("input_exposure_metrics over {TOTAL_ROWS} events: {elapsed:?}");
+
+        assert!(
+            metrics.total_input_events > 0,
+            "the fixture must exercise the sweep"
+        );
+        assert!(
+            elapsed <= MILLION_EVENT_BUDGET,
+            "input_exposure_metrics took {elapsed:?} over {TOTAL_ROWS} events; \
+             the peer reader budget is {MILLION_EVENT_BUDGET:?}"
+        );
     }
 
     fn health_fixture_db() -> Connection {

@@ -19,3 +19,5 @@ serde_json.workspace = true
 # The shared product-copy style law (Lane B enforcement); tests only —
 # the runtime crate keeps its dependency surface unchanged.
 gilbreth-core = { path = "../gilbreth-core" }
+# The million-event reader-budget fixture writes a real database file.
+tempfile.workspace = true
