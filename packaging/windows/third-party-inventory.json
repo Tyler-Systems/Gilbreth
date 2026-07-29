@@ -7,18 +7,18 @@
     "policySha256": "b04df94e572a29b50e87e949a4a268911af88eab70652bb6642f99fd2da34a0a"
   },
   "target": "x86_64-pc-windows-msvc",
-  "rootPackage": "gilbreth-app@0.1.1",
+  "rootPackage": "gilbreth-app@0.1.2",
   "dependencyKinds": [
     "normal",
     "build"
   ],
   "dependencyGraph": {
     "resolver": "cargo-tree-package-scoped-v1",
-    "package": "gilbreth-app@0.1.1",
+    "package": "gilbreth-app@0.1.2",
     "normalEdges": "normal",
     "nonDevEdges": "normal,build"
   },
-  "cargoLockSha256": "71c2671486d7642fa5d49c51515ba8f876ab65864d86a32cc5cc6261efd5927d",
+  "cargoLockSha256": "a193d3d96ccd387237973c87df9bae30892023509f464a1f4199165a05aa273d",
   "counts": {
     "workspacePackages": 6,
     "externalNormalPackages": 263,
@@ -30,33 +30,33 @@
   "workspacePackages": [
     {
       "name": "gilbreth-app",
-      "version": "0.1.1",
-      "key": "gilbreth-app@0.1.1"
+      "version": "0.1.2",
+      "key": "gilbreth-app@0.1.2"
     },
     {
       "name": "gilbreth-capture-windows",
-      "version": "0.1.1",
-      "key": "gilbreth-capture-windows@0.1.1"
+      "version": "0.1.2",
+      "key": "gilbreth-capture-windows@0.1.2"
     },
     {
       "name": "gilbreth-core",
-      "version": "0.1.1",
-      "key": "gilbreth-core@0.1.1"
+      "version": "0.1.2",
+      "key": "gilbreth-core@0.1.2"
     },
     {
       "name": "gilbreth-dashboard",
-      "version": "0.1.1",
-      "key": "gilbreth-dashboard@0.1.1"
+      "version": "0.1.2",
+      "key": "gilbreth-dashboard@0.1.2"
     },
     {
       "name": "gilbreth-read",
-      "version": "0.1.1",
-      "key": "gilbreth-read@0.1.1"
+      "version": "0.1.2",
+      "key": "gilbreth-read@0.1.2"
     },
     {
       "name": "gilbreth-store",
-      "version": "0.1.1",
-      "key": "gilbreth-store@0.1.1"
+      "version": "0.1.2",
+      "key": "gilbreth-store@0.1.2"
     }
   ],
   "cargoPackages": [

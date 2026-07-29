@@ -8,7 +8,7 @@ Gilbreth is licensed under AGPL-3.0-or-later. See `LICENSE.md` in the installed 
 
 ## Scope and method
 
-This notice covers the exact package-scoped Cargo.lock closure for `gilbreth-app@0.1.1` on
+This notice covers the exact package-scoped Cargo.lock closure for `gilbreth-app@0.1.2` on
 `x86_64-pc-windows-msvc`: 263 external normal packages and
 20 build-only packages (283 external non-development packages total), plus
 6 Gilbreth workspace packages. Dev dependencies and dependencies for other targets are excluded.
