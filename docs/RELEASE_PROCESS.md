@@ -85,11 +85,13 @@ secret material.
 8. **Verify as a stranger.** Without private-repository access, download every
    published set, follow [VERIFY.md](VERIFY.md), and exercise the applicable
    clean install/update/uninstall path.
-9. **Update the README and the website.** Both link the installer asset
-   directly, so each release must re-point them. `README.md` states the
-   version and the direct download URL twice (the masthead badge link and
-   the Download section); commit that bump to `main` once the release is
-   published. `gilbreth.tylersystems.com` states the released version in
+9. **Update the README, MAINTAINING.md, and the website.** The repo and
+   the site both link the installer asset directly, so each release must
+   re-point them. `README.md` states the version in three places (the
+   masthead badge's direct-asset link, the Download section's version and
+   direct-asset link, and the Project-status table's tag link);
+   `docs/MAINTAINING.md` states it in its platform table. Commit those
+   bumps to `main` once the release is published. `gilbreth.tylersystems.com` states the released version in
    several places: `index.html` (the hero note, the "Where we are" section,
    the FAQ answer, the JSON-LD `softwareVersion` and `downloadUrl`, and the
    direct-asset `href` on all three Download buttons — hero, status, and

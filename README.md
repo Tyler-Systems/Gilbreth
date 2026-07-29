@@ -96,7 +96,7 @@ easier for the next person to find.
 
 | Area | Current state | Next gate |
 |---|---|---|
-| Windows x64 | Supported. [`v0.1.1`](https://github.com/Tyler-Systems/Gilbreth/releases/tag/v0.1.1) is published, signed, and built from this source root. | None open. Later versions follow the [release process](docs/RELEASE_PROCESS.md). |
+| Windows x64 | Supported. [`v0.1.2`](https://github.com/Tyler-Systems/Gilbreth/releases/tag/v0.1.2) is published, signed, and built from this source root. | None open. Later versions follow the [release process](docs/RELEASE_PROCESS.md). |
 | macOS arm64 | Ambient capture and dogfood work; no packaged release. | The macOS distribution work, before any macOS package ships. |
 | Linux | Portable-library and CI hygiene only. | No Linux product release is planned. |
 | Contributions | Open. Issues need nothing; code needs a signed [contributor licence agreement](CONTRIBUTOR_AGREEMENT.md). | None open. |
