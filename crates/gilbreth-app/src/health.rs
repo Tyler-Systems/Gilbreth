@@ -45,14 +45,20 @@ impl LogReviewSummary {
     }
 }
 
+// The level token sits right after the timestamp, so both patterns anchor
+// there case-sensitively: message text must not classify the line (the
+// 2026-07-28 finding — 94 of a dev machine's 95 counted "errors" were WARN
+// lines carrying a structured `error=` field). Panic lines have no level
+// prefix at all (bare backtrace text), so that arm stays an unanchored,
+// case-insensitive substring. Byte-parity twin: review_run.py.
 fn warning_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"(?i)\bWARN\b").expect("warning pattern compiles"))
+    RE.get_or_init(|| Regex::new(r"^\S+\s+WARN\b").expect("warning pattern compiles"))
 }
 
 fn error_or_panic_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"(?i)\bERROR\b|panic").expect("error pattern compiles"))
+    RE.get_or_init(|| Regex::new(r"^\S+\s+ERROR\b|(?i:panic)").expect("error pattern compiles"))
 }
 
 fn clipboard_locked_re() -> &'static Regex {
@@ -239,8 +245,11 @@ mod tests {
     #[test]
     fn classification_mirrors_review_run_patterns() {
         let mut summary = LogReviewSummary::default();
-        // Word boundaries: WARN counts, WARNING does not double-classify a
-        // non-WARN token; "panicked" matches (no boundary on panic).
+        // Level tokens classify only in the level position: WARN right
+        // after the timestamp counts, WARNING does not, and neither an
+        // `error=` field in a WARN message nor a WARN mentioned inside an
+        // INFO message classifies the line; "panicked" matches anywhere
+        // (no level prefix on backtrace lines).
         classify_line(
             "2026-07-09T10:00:00Z  WARN gilbreth_app: something odd",
             &mut summary,
@@ -249,6 +258,18 @@ mod tests {
         classify_line("thread 'main' panicked at src/main.rs:1", &mut summary);
         classify_line(
             "2026-07-09T10:01:00Z ERROR gilbreth_store: broke",
+            &mut summary,
+        );
+        // A WARN line whose message carries a structured error= field is a
+        // warning, not an error/panic (the 2026-07-28 finding).
+        classify_line(
+            "2026-07-09T10:01:30Z  WARN gilbreth_capture_windows: failed to close \
+             clipboard error=Thread does not have a clipboard open. (0x8007058A)",
+            &mut summary,
+        );
+        // Level words inside message text never classify.
+        classify_line(
+            "2026-07-09T10:01:40Z  INFO gilbreth_app: user saw the WARN and ERROR copy",
             &mut summary,
         );
         classify_line(
@@ -278,13 +299,13 @@ mod tests {
             &mut summary,
         );
 
-        assert_eq!(summary.warning_lines, 6);
+        assert_eq!(summary.warning_lines, 7);
         assert_eq!(summary.clipboard_locked_warning_lines, 1);
         assert_eq!(summary.orphan_session_repair_warning_lines, 1);
         assert_eq!(summary.stale_pre_erase_drop_warning_lines, 1);
         assert_eq!(summary.recovered_focus_warning_lines, 1);
         assert_eq!(summary.open_focus_discard_warning_lines, 1);
-        assert_eq!(summary.unknown_warning_lines(), 1);
+        assert_eq!(summary.unknown_warning_lines(), 2);
         assert_eq!(summary.error_panic_lines, 2);
         assert_eq!(summary.max_events_skipped, 9);
         assert!(!summary.healthy());
@@ -339,8 +360,14 @@ mod tests {
             "2026-07-08T10:00:00Z  WARN old unknown warning\n",
         )
         .expect("old log");
-        std::fs::write(dir.path().join("GILBRETH.LOG.OLD"), "ERROR renamed log\n")
-            .expect("renamed log");
+        // A panic line: level tokens only classify in the level position,
+        // and the rename-case intent needs a line that classifies without
+        // a timestamp.
+        std::fs::write(
+            dir.path().join("GILBRETH.LOG.OLD"),
+            "thread 'writer' panicked in renamed log\n",
+        )
+        .expect("renamed log");
         std::fs::write(
             dir.path().join("gilbreth.log.2026-07-09"),
             "2026-07-09T10:00:00Z  INFO fine\nevents_skipped=2 in report\n",

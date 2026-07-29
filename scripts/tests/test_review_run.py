@@ -804,9 +804,9 @@ def test_review_logs_summarizes_issues_without_printing_content(tmp_path: Path) 
     (logs_dir / "gilbreth.log.2026-06-07").write_text(
         "\n".join(
             [
-                "INFO writer heartbeat events_skipped=0",
-                "WARN something happened",
-                "ERROR writer failed events_skipped=2",
+                "2026-06-07T10:00:00Z  INFO writer heartbeat events_skipped=0",
+                "2026-06-07T10:00:01Z  WARN something happened",
+                "2026-06-07T10:00:02Z ERROR writer failed events_skipped=2",
                 "writer thread panicked",
             ]
         ),
@@ -827,6 +827,35 @@ def test_review_logs_summarizes_issues_without_printing_content(tmp_path: Path) 
     assert summary.healthy is False
 
 
+def test_review_logs_count_levels_not_message_text(tmp_path: Path) -> None:
+    """A WARN line carrying a structured error= field is a warning, not an
+    error/panic, and level words inside message text never classify (the
+    2026-07-28 finding: 94 of a dev machine's 95 counted errors were
+    error= fields in WARN messages). Panic lines carry no level prefix
+    and still count."""
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir()
+    (logs_dir / "gilbreth.log.2026-07-28").write_text(
+        "\n".join(
+            [
+                "2026-07-28T10:00:00Z  WARN gilbreth_capture_windows: failed to close "
+                "clipboard error=Thread does not have a clipboard open. (0x8007058A)",
+                "2026-07-28T10:00:01Z  INFO gilbreth_app: user saw the WARN and ERROR copy",
+                "2026-07-28T10:00:02Z ERROR gilbreth_store: broke",
+                "thread 'main' panicked at src/main.rs:1",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    summary = review_logs(logs_dir)
+
+    assert summary.warning_lines == 1
+    assert summary.unknown_warning_lines == 1
+    assert summary.error_panic_lines == 2
+    assert summary.max_events_skipped == 0
+
+
 def test_review_logs_classifies_clipboard_locked_warning_noise(
     tmp_path: Path,
 ) -> None:
@@ -835,9 +864,9 @@ def test_review_logs_classifies_clipboard_locked_warning_noise(
     (logs_dir / "gilbreth.log.2026-06-15").write_text(
         "\n".join(
             [
-                "WARN gilbreth_capture_windows: clipboard changed but metadata was unavailable; clipboard is locked",
-                "WARN gilbreth_capture_windows: clipboard changed but metadata was unavailable; clipboard is locked",
-                "INFO writer heartbeat events_skipped=0",
+                "2026-06-15T10:00:00Z  WARN gilbreth_capture_windows: clipboard changed but metadata was unavailable; clipboard is locked",
+                "2026-06-15T10:00:01Z  WARN gilbreth_capture_windows: clipboard changed but metadata was unavailable; clipboard is locked",
+                "2026-06-15T10:00:02Z  INFO writer heartbeat events_skipped=0",
             ]
         ),
         encoding="utf-8",
@@ -868,8 +897,8 @@ def test_review_logs_classifies_orphan_repair_warning_as_known(
     (logs_dir / "gilbreth.log.2026-06-19").write_text(
         "\n".join(
             [
-                "WARN gilbreth_store: previous session(s) ended without graceful stop orphan_sessions_finalized=1",
-                "INFO writer heartbeat events_skipped=0",
+                "2026-06-19T10:00:00Z  WARN gilbreth_store: previous session(s) ended without graceful stop orphan_sessions_finalized=1",
+                "2026-06-19T10:00:01Z  INFO writer heartbeat events_skipped=0",
             ]
         ),
         encoding="utf-8",
@@ -899,8 +928,8 @@ def test_review_logs_unknown_warning_marks_report_for_review(
     (logs_dir / "gilbreth.log.2026-06-15").write_text(
         "\n".join(
             [
-                "WARN gilbreth_store: unexpected long-run condition",
-                "INFO writer heartbeat events_skipped=0",
+                "2026-06-15T10:00:00Z  WARN gilbreth_store: unexpected long-run condition",
+                "2026-06-15T10:00:01Z  INFO writer heartbeat events_skipped=0",
             ]
         ),
         encoding="utf-8",
@@ -923,7 +952,7 @@ def test_review_logs_classifies_stale_pre_erase_drop_under_named_counter(
     logs_dir = tmp_path / "logs"
     logs_dir.mkdir()
     (logs_dir / "gilbreth.log.2026-07-12").write_text(
-        "WARN gilbreth_store: dropped stale pre-erase capture row ",
+        "2026-07-12T10:00:00Z  WARN gilbreth_store: dropped stale pre-erase capture row ",
         encoding="utf-8",
     )
 
@@ -947,7 +976,10 @@ def test_review_logs_scopes_timestamped_lines_to_event_window(
                 "1970-01-01T00:00:01.500Z WARN in-window warning",
                 "1970-01-01T00:00:01.700+00:00 INFO writer heartbeat events_skipped=3",
                 "1970-01-01T00:00:02.001Z ERROR next run failure",
-                "WARN unparseable timestamp stays in scope",
+                # An unparseable-timestamp line stays in scope; under
+                # level-anchored matching only panic lines (which carry no
+                # level prefix) can classify without a timestamp.
+                "thread 'writer' panicked with no timestamp, stays in scope",
             ]
         ),
         encoding="utf-8",
@@ -955,9 +987,9 @@ def test_review_logs_scopes_timestamped_lines_to_event_window(
 
     summary = review_logs(logs_dir, since_ms=1_000, until_ms=2_000)
 
-    assert summary.warning_lines == 2
-    assert summary.unknown_warning_lines == 2
-    assert summary.error_panic_lines == 0
+    assert summary.warning_lines == 1
+    assert summary.unknown_warning_lines == 1
+    assert summary.error_panic_lines == 1
     assert summary.max_events_skipped == 3
 
 
@@ -1064,8 +1096,11 @@ def test_review_logs_matches_the_native_health_classifier(tmp_path: Path) -> Non
         encoding="utf-8",
     )
     # The B2 corpus: a valid Windows rename differing only in case still
-    # carries its error into the verdict.
-    (logs / "GILBRETH.LOG.OLD").write_text("ERROR renamed log\n", encoding="utf-8")
+    # carries its classifying line into the verdict (a panic line, since
+    # level tokens only classify in the level position).
+    (logs / "GILBRETH.LOG.OLD").write_text(
+        "thread 'writer' panicked in renamed log\n", encoding="utf-8"
+    )
     # Undecodable bytes never stop the review on either side.
     (logs / "gilbreth.log.1").write_bytes(
         b"2026-07-09T11:00:00Z  WARN bad \xff\xfe bytes\nevents_skipped=2\n"

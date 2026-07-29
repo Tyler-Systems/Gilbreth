@@ -12,8 +12,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
-LOG_WARNING_RE = re.compile(r"\bWARN\b", re.IGNORECASE)
-LOG_ERROR_OR_PANIC_RE = re.compile(r"\bERROR\b|panic", re.IGNORECASE)
+# The level token sits right after the timestamp, so both patterns anchor
+# there case-sensitively: message text must not classify the line (the
+# 2026-07-28 finding: 94 of a dev machine's 95 counted "errors" were WARN
+# lines carrying a structured `error=` field). Panic lines have no level
+# prefix at all, so that arm stays an unanchored, case-insensitive
+# substring. Byte-parity twin: gilbreth-app/src/health.rs.
+LOG_WARNING_RE = re.compile(r"^\S+\s+WARN\b")
+LOG_ERROR_OR_PANIC_RE = re.compile(r"^\S+\s+ERROR\b|(?i:panic)")
 CLIPBOARD_LOCKED_RE = re.compile(
     r"clipboard changed but metadata was unavailable; clipboard is locked",
     re.IGNORECASE,
