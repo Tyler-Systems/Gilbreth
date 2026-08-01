@@ -1,15 +1,13 @@
-//! Linux host services (LIN-0, the viewer build): real paths, the lockfile
-//! single-instance guard, atomic config replace, the hostname, the SIGTERM
-//! latch, and `xdg-open`. There is no Linux capture backend — the capture
-//! pump declines with `CaptureError::UnsupportedPlatform` and `run()`'s
-//! Linux stub turns the capture process away before it gets here — and the
-//! dialogs keep the MAC-0 stub posture: logged alerts (echoed to stderr,
-//! since a viewer launched from a terminal has no other surface), fail-safe
-//! declined confirms. The product platforms stay Windows and macOS; this
-//! backend exists so `gilbreth-app --dashboard` builds and runs on a Linux
-//! development machine (LIN-0). The POSIX pieces are the macOS shapes:
-//! `flock` guards, `rename(2)` replace, `gethostname(2)`, the atomic-store
-//! SIGTERM handler.
+//! Linux host services (LIN-1, the X11 dogfood tier): real paths, the
+//! lockfile single-instance guard, atomic config replace, the hostname, the
+//! SIGTERM latch, `xdg-open`, and the live capture-pump surface —
+//! `gilbreth-capture-linux`'s X11 pump, its self-pipe waker, and the
+//! XGrabKey pause hotkey. The dialogs keep the LIN-0 stub posture: logged
+//! alerts (echoed to stderr), fail-safe declined confirms — a recorded
+//! LIN-1 gap, not an oversight; the confirm-gated privacy flows therefore
+//! refuse rather than proceed unseen. The POSIX pieces are the macOS
+//! shapes: `flock` guards, `rename(2)` replace, `gethostname(2)`, the
+//! atomic-store SIGTERM handler.
 
 use std::{
     env,
@@ -26,6 +24,7 @@ use gilbreth_core::{CaptureControls, CaptureError, Captured, StopToken};
 use tracing::warn;
 
 use super::{AlertKind, ConfirmAnswer, ConfirmButtons};
+use crate::hotkey::{HotkeyKey, PauseHotkeyChord};
 use crate::permissions::{PermissionAction, PermissionState};
 
 pub fn reconcile_sensitive_context_before_resume(_pump_waker: PumpWaker) -> Option<u64> {
@@ -197,24 +196,35 @@ pub fn is_other_session_instance_error(_error: &anyhow::Error) -> bool {
     false
 }
 
-/// There is no Linux capture pump to wake (LIN-0); the token exists for
-/// facade symmetry and wakes nobody.
+/// Cross-thread wake handle for the pump thread: signals the capture
+/// crate's self-pipe (the Linux analog of the Win32
+/// `PostThreadMessageW(WM_APP)` wake and the macOS CFRunLoop wake source).
+/// The pump registers its pipe when it starts, so the handle itself stays a
+/// copyable token like the Windows thread id.
 #[derive(Clone, Copy, Debug)]
-pub struct PumpWaker;
+pub struct PumpWaker {
+    connected: bool,
+}
 
 impl PumpWaker {
+    /// Call on the thread that will run `run_capture_pump`, before workers
+    /// that wake it spawn — same contract as the Windows twin.
     pub fn for_current_thread() -> Self {
-        Self
+        Self { connected: true }
     }
 
     /// A waker that wakes nobody, for tests exercising the command lanes
     /// without a pump thread.
     #[cfg(test)]
     pub fn disconnected() -> Self {
-        Self
+        Self { connected: false }
     }
 
-    pub fn wake(&self) {}
+    pub fn wake(&self) {
+        if self.connected {
+            gilbreth_capture_linux::wake_pump();
+        }
+    }
 }
 
 /// SIGTERM latch, the macOS shape: the handler body is a single atomic
@@ -280,29 +290,103 @@ pub fn open_url(url: &str) -> bool {
     }
 }
 
-/// Nothing to set up: the viewer build has no tray shell and egui owns its
-/// own event loop in the `--dashboard` process.
+/// Nothing to set up: the SNI tray lives on its own D-Bus service thread
+/// (no AppKit/Win32 message-queue analog exists on this seam).
 pub fn init_app_shell() {}
 
-/// No shell event queue exists outside the dashboard's own loop.
+/// No shell event queue exists: tray activations arrive through the menu
+/// channel the ksni service feeds, drained by the shared service pass.
 pub fn pump_app_events() {}
 
-/// No pump runs on Linux (LIN-0); there is nothing to stop.
-pub fn request_pump_quit() {}
+/// Ask the pump to exit (the tray-quit path — the Linux analog of
+/// `PostQuitMessage`): latch the capture crate's stop flag and wake its
+/// self-pipe, so the request is never lost regardless of where the loop is
+/// in its pass. Cross-thread safe; a quiet no-op once the pump has exited.
+pub fn request_pump_quit() {
+    gilbreth_capture_linux::stop_pump();
+}
 
-/// LIN-0: ambient capture has no Linux backend. `run()`'s Linux stub
-/// declines before the pipeline is wired, so this is unreachable in
-/// practice; it answers honestly anyway.
+/// Run the platform capture pump on the current thread until stop/quit: the
+/// X11 connection drained beside the self-pipe waker, with the periodic
+/// service callback on the shared 50 ms cadence (LIN-1). A session without
+/// an X server declines here honestly — Wayland is absent by design.
 pub fn run_capture_pump<F>(
-    _tx: Sender<Captured>,
-    _stop: StopToken,
-    _controls: CaptureControls,
-    _after_service: F,
+    tx: Sender<Captured>,
+    stop: StopToken,
+    controls: CaptureControls,
+    after_service: F,
 ) -> Result<(), CaptureError>
 where
     F: FnMut(),
 {
-    Err(CaptureError::UnsupportedPlatform)
+    gilbreth_capture_linux::run_pump(tx, stop, controls, after_service)
+}
+
+/// Lifetime guard for the XGrabKey claim, mirroring the Windows/Carbon
+/// twins: dropping it releases the grab and stops the reader thread.
+pub struct PauseHotkeyRegistration {
+    _grab: gilbreth_capture_linux::PauseHotkeyGrab,
+}
+
+pub fn register_pause_hotkey(chord: PauseHotkeyChord) -> Result<PauseHotkeyRegistration> {
+    let keysym = x_keysym(chord.key).ok_or_else(|| {
+        anyhow!(
+            "X11 has no keysym for {}; choose a different pause chord",
+            chord.key
+        )
+    })?;
+    let grab = gilbreth_capture_linux::register_pause_hotkey_grab(
+        keysym,
+        gilbreth_capture_linux::PauseChordModifiers {
+            ctrl: chord.ctrl,
+            alt: chord.alt,
+            shift: chord.shift,
+            win: chord.win,
+        },
+    )
+    .map_err(|error| anyhow!(error))?;
+    Ok(PauseHotkeyRegistration { _grab: grab })
+}
+
+/// Consume the edge recorded by the grab reader. Called once per pump
+/// service pass, immediately before tray/menu handling.
+pub fn take_pause_hotkey_press() -> bool {
+    gilbreth_capture_linux::take_pause_hotkey_press()
+}
+
+/// `HotkeyKey` to X keysym, the twin of `windows_virtual_key` and
+/// `carbon_key_code`. Letters map to their lowercase keysym — the capture
+/// crate's grab matches a keysym at any shift level of a keycode, so the
+/// level-0 lowercase form is the canonical spelling. `None` never happens
+/// today (X has a keysym for every `HotkeyKey`), but the shape stays the
+/// twins' so a future key addition degrades to "off for this run" instead
+/// of binding the wrong key.
+fn x_keysym(key: HotkeyKey) -> Option<u32> {
+    let keysym = match key {
+        HotkeyKey::Letter(value) => u32::from(value.to_ascii_lowercase()),
+        HotkeyKey::Digit(value) => u32::from(value),
+        HotkeyKey::Function(value) => {
+            // XK_F1 (0xffbe) through XK_F24; the parser already caps at 24.
+            0xffbe + u32::from(value.checked_sub(1)?)
+        }
+        HotkeyKey::Backspace => u32::from(xkeysym::Keysym::BackSpace),
+        HotkeyKey::Delete => u32::from(xkeysym::Keysym::Delete),
+        HotkeyKey::Down => u32::from(xkeysym::Keysym::Down),
+        HotkeyKey::End => u32::from(xkeysym::Keysym::End),
+        HotkeyKey::Enter => u32::from(xkeysym::Keysym::Return),
+        HotkeyKey::Escape => u32::from(xkeysym::Keysym::Escape),
+        HotkeyKey::Home => u32::from(xkeysym::Keysym::Home),
+        HotkeyKey::Insert => u32::from(xkeysym::Keysym::Insert),
+        HotkeyKey::Left => u32::from(xkeysym::Keysym::Left),
+        HotkeyKey::PageDown => u32::from(xkeysym::Keysym::Next),
+        HotkeyKey::PageUp => u32::from(xkeysym::Keysym::Prior),
+        HotkeyKey::Pause => u32::from(xkeysym::Keysym::Pause),
+        HotkeyKey::Right => u32::from(xkeysym::Keysym::Right),
+        HotkeyKey::Space => u32::from(xkeysym::Keysym::space),
+        HotkeyKey::Tab => u32::from(xkeysym::Keysym::Tab),
+        HotkeyKey::Up => u32::from(xkeysym::Keysym::Up),
+    };
+    Some(keysym)
 }
 
 /// Stub dialog (the MAC-0 posture): logged, echoed to stderr — a Linux
@@ -383,13 +467,40 @@ mod tests {
     }
 
     #[test]
-    fn capture_pump_declines_as_unsupported() {
-        let (tx, _rx) = crossbeam_channel::bounded(1);
-        let result = run_capture_pump(tx, StopToken::new(), CaptureControls::default(), || {});
-        assert!(
-            matches!(result, Err(CaptureError::UnsupportedPlatform)),
-            "the Linux pump must decline, not pretend"
-        );
+    fn pause_chord_keys_all_resolve_to_keysyms() {
+        // Every key the chord parser can produce must map, so a valid
+        // config never silently loses its hotkey to a table gap. Spot the
+        // families plus every named key.
+        for key in [
+            HotkeyKey::Letter('P'),
+            HotkeyKey::Letter('a'),
+            HotkeyKey::Digit('0'),
+            HotkeyKey::Digit('9'),
+            HotkeyKey::Function(1),
+            HotkeyKey::Function(24),
+            HotkeyKey::Backspace,
+            HotkeyKey::Delete,
+            HotkeyKey::Down,
+            HotkeyKey::End,
+            HotkeyKey::Enter,
+            HotkeyKey::Escape,
+            HotkeyKey::Home,
+            HotkeyKey::Insert,
+            HotkeyKey::Left,
+            HotkeyKey::PageDown,
+            HotkeyKey::PageUp,
+            HotkeyKey::Pause,
+            HotkeyKey::Right,
+            HotkeyKey::Space,
+            HotkeyKey::Tab,
+            HotkeyKey::Up,
+        ] {
+            assert!(x_keysym(key).is_some(), "{key:?} must resolve");
+        }
+        // Letters resolve to the lowercase keysym (XK_p), the level-0 form
+        // the capture crate's grab scan expects.
+        assert_eq!(x_keysym(HotkeyKey::Letter('P')), Some(0x70));
+        assert_eq!(x_keysym(HotkeyKey::Function(1)), Some(0xffbe));
     }
 
     #[test]

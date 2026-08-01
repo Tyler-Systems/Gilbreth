@@ -1,20 +1,19 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-// LIN-0 (Linux viewer build): the capture shell — tray, service pass, the
-// privacy/record dialog flows — compiles dormant on Linux behind the
-// gated `run()`, so the dead-code lint would flag half this file there.
-// The lint stays live on the product platforms.
-#![cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
 
 #[cfg(windows)]
 mod authenticode;
 // Launch-at-startup: HKCU Run key on Windows, SMAppService login item on
-// macOS (shell-remainders slice); the stub declines on any other target.
+// macOS (shell-remainders slice), XDG autostart entry on Linux (LIN-1);
+// the stub declines on any other target.
 #[cfg(windows)]
 mod autostart;
 #[cfg(target_os = "macos")]
 #[path = "autostart_macos.rs"]
 mod autostart;
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(target_os = "linux")]
+#[path = "autostart_linux.rs"]
+mod autostart;
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 #[path = "autostart_stub.rs"]
 mod autostart;
 mod config;
@@ -33,6 +32,10 @@ mod notification_consent;
 mod permissions;
 mod platform;
 mod privacy_receipt;
+// The Linux tray shell: the StatusNotifier backend behind a
+// tray-icon-shaped facade, so the shared Tray below stays one body.
+#[cfg(target_os = "linux")]
+mod tray_linux;
 mod uninstall;
 
 use std::{
@@ -50,9 +53,6 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-// Consumed only by the capture shell (`run()`, `Tray`), which the LIN-0
-// viewer build gates out.
-#[cfg(any(windows, target_os = "macos"))]
 use std::panic::{self, AssertUnwindSafe};
 
 use anyhow::{anyhow, Context, Result};
@@ -62,23 +62,17 @@ use crossbeam_channel::{bounded, select, Receiver, Sender};
 use gilbreth_capture_windows::record_routine::{
     start_record_routine_capture, RecordRoutineConfig, RecordRoutineHandle,
 };
-// `test` too: the record-flow tests exercise the portable command lane on
-// every platform, including the LIN-0 viewer build.
-#[cfg(any(windows, target_os = "macos", test))]
 use gilbreth_core::RecordStopReason;
 use gilbreth_core::{
     CaptureControls, CaptureStream, Captured, EventPayload, Source, StopToken, WriterInput,
 };
-#[cfg(any(windows, target_os = "macos"))]
 use gilbreth_core::{Sequencer, SessionTimebase};
-#[cfg(any(windows, target_os = "macos"))]
 use gilbreth_store::run_writer_with_commands;
 use gilbreth_store::{
     ArchiveResetOutcome, ArchiveResetReport, CapPrompt, GilbrethStore, PanicActionCutoff,
     PendingRecordRequest, SecureEraseOutcome, SecureEraseReport, SessionIdentity, StoreError,
     WriterCommand, WriterReport,
 };
-#[cfg(any(windows, target_os = "macos"))]
 use platform::SingleInstance;
 use platform::{
     alert, confirm, downloads_dir, local_data_dir, local_host_name, AlertKind, ConfirmButtons,
@@ -91,6 +85,13 @@ use tracing_subscriber::EnvFilter;
 use tray_icon::{
     menu::{CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu},
     Icon, TrayIcon, TrayIconBuilder,
+};
+// The same names from the SNI facade, so the Tray body below compiles
+// identically on all three platforms (LIN-1 tray decision).
+#[cfg(target_os = "linux")]
+use tray_linux::{
+    CheckMenuItem, Icon, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu, TrayIcon,
+    TrayIconBuilder,
 };
 
 const CHANNEL_CAPACITY: usize = 4096;
@@ -195,10 +196,6 @@ const TOOLTIP_RECORDING: &str = "Gilbreth — recording (Pause / Stop)";
 
 const DIALOG_TITLE_DASHBOARD: &str = "Gilbreth Dashboard";
 const DIALOG_TITLE_APP: &str = "Gilbreth";
-// The copy-allow must sit directly above the constant it grants: the auditor
-// binds it to the next string literal, and the cfg predicate below contains
-// one ("macos").
-#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
 // copy-allow: em-dash name — context title notation, not prose (Lane B ruling, data-notation family)
 const DIALOG_TITLE_PAUSE_HOTKEY: &str = "Gilbreth — Pause hotkey";
 // copy-allow: em-dash name — context title notation, not prose (Lane B ruling, data-notation family)
@@ -1133,17 +1130,6 @@ fn collision_free_path(dir: &Path, filename: &str) -> Result<PathBuf, String> {
     ))
 }
 
-/// LIN-0: Linux builds are dashboard viewers. Ambient capture has no Linux
-/// backend, so the capture process declines rather than starting a pipeline
-/// with no sources; `--dashboard` routes before this in `main`.
-#[cfg(not(any(windows, target_os = "macos")))]
-fn run() -> Result<()> {
-    Err(anyhow!(
-        "ambient capture is not implemented on Linux; open the dashboard with `gilbreth-app --dashboard`"
-    ))
-}
-
-#[cfg(any(windows, target_os = "macos"))]
 fn run() -> Result<()> {
     let _lifecycle = LifecycleGuard::acquire_shared()
         .context("failed to acquire shared package lifecycle guard")?;
@@ -1167,7 +1153,6 @@ fn run() -> Result<()> {
     log_config_status(&loaded_config.status);
     warn_user_if_config_malformed(&loaded_config.status);
     let mut app_config = loaded_config.config;
-    #[cfg(any(windows, target_os = "macos"))]
     let resolved_pause_hotkey = {
         let resolved = hotkey::resolve_pause_hotkey(&app_config.hotkey.pause_resume);
         if let Some(message) = resolved.warning {
@@ -1175,7 +1160,6 @@ fn run() -> Result<()> {
         }
         resolved
     };
-    #[cfg(any(windows, target_os = "macos"))]
     let hotkey_status_path = hotkey::status_sidecar_path(&config_path);
     // First-run consent (the first-run consent design, R1): blocking on the main
     // thread, before the tray exists and before any capture source starts.
@@ -1302,7 +1286,6 @@ fn run() -> Result<()> {
         },
     )
     .context("failed to create tray icon")?;
-    #[cfg(any(windows, target_os = "macos"))]
     let _pause_hotkey_registration =
         initialize_pause_hotkey(resolved_pause_hotkey.setting, &hotkey_status_path);
     // File name only, and no host/run-label: paths, hostnames, and labels can
@@ -1323,7 +1306,6 @@ fn run() -> Result<()> {
         // click handled this pass reaches MenuEvent::receiver() before the
         // menu handler below reads it.
         platform::pump_app_events();
-        #[cfg(any(windows, target_os = "macos"))]
         if platform::take_pause_hotkey_press() {
             tray.toggle_capture_pause(true);
         }
@@ -1358,7 +1340,6 @@ fn run() -> Result<()> {
     }
 }
 
-#[cfg(any(windows, target_os = "macos"))]
 fn initialize_pause_hotkey(
     setting: hotkey::PauseHotkeySetting,
     status_path: &Path,
@@ -1759,7 +1740,6 @@ fn resume_capture_after_quiet(
     Err(last_error)
 }
 
-#[cfg(any(windows, target_os = "macos"))]
 struct Tray {
     _menu: Menu,
     _capture_menu: Submenu,
@@ -1893,7 +1873,6 @@ enum RecordUiEvent {
     },
 }
 
-#[cfg(any(windows, target_os = "macos"))]
 impl Tray {
     fn new(
         stop: StopToken,
@@ -4814,7 +4793,6 @@ fn show_secure_erase_report(
     alert(DIALOG_TITLE_SECURE_ERASE, &message, kind);
 }
 
-#[cfg(any(windows, target_os = "macos"))]
 fn create_icon() -> Result<Icon> {
     const ICON_SIZE: usize = 32;
     // macOS status items are template images (shell-remainders slice): a
@@ -4871,14 +4849,12 @@ fn template_icon_rgba(size: usize) -> Vec<u8> {
     rgba
 }
 
-#[cfg(any(windows, target_os = "macos"))]
 fn create_recording_icon() -> Result<Icon> {
     const ICON_SIZE: usize = 32;
     let rgba = record_icon_rgba(ICON_SIZE, RecordIconState::Recording);
     Icon::from_rgba(rgba, ICON_SIZE as u32, ICON_SIZE as u32).context("invalid recording tray icon")
 }
 
-#[cfg(any(windows, target_os = "macos"))]
 fn create_paused_recording_icon() -> Result<Icon> {
     const ICON_SIZE: usize = 32;
     let rgba = record_icon_rgba(ICON_SIZE, RecordIconState::Paused);

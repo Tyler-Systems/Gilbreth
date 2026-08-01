@@ -10,10 +10,10 @@
 //! macOS backend is the MAC-0 seam implementation: real paths, lockfile
 //! single instance, and POSIX rename; dialogs and the capture pump are
 //! honest stubs until MAC-1 (NSAlert, CFRunLoop + real event sources).
-//! The Linux backend is the LIN-0 viewer seam: real paths and guards for
-//! the `--dashboard` process, stub dialogs, and a capture pump that
-//! declines (`CaptureError::UnsupportedPlatform`) behind `run()`'s Linux
-//! stub — a development viewer, not a product platform.
+//! The Linux backend is the LIN-1 dogfood seam: the LIN-0 viewer pieces
+//! (real paths and guards, stub dialogs — a recorded LIN-1 gap) plus the
+//! live X11 capture pump, self-pipe waker, and XGrabKey pause hotkey from
+//! `gilbreth-capture-linux`. X11 only; Wayland is absent by design.
 
 #[cfg(windows)]
 #[path = "windows.rs"]
@@ -27,22 +27,16 @@ mod imp;
 #[path = "linux.rs"]
 mod imp;
 
-// LIN-0: the viewer build consumes only the dashboard-path names; the
-// capture-pass names go dormant with the gated `run()` but stay exported,
-// because a backend that only half-implements the facade is not a backend.
-#[cfg_attr(not(any(windows, target_os = "macos")), allow(unused_imports))]
 pub use imp::{
     alert, confirm, confirm_three_way, current_permission_state, downloads_dir, init_app_shell,
     init_permission_baseline, init_termination_signal, is_other_session_instance_error,
     local_data_dir, local_host_name, note_permission_state_written, open_url,
     perform_permission_action, permission_state_changed, pump_app_events,
-    reconcile_sensitive_context_before_resume, replace_file, request_pump_quit, run_capture_pump,
-    take_termination_signal, DashboardUiStateOwner, LifecycleExclusiveGuard, LifecycleGuard,
+    reconcile_sensitive_context_before_resume, register_pause_hotkey, replace_file,
+    request_pump_quit, run_capture_pump, take_pause_hotkey_press, take_termination_signal,
+    DashboardUiStateOwner, LifecycleExclusiveGuard, LifecycleGuard, PauseHotkeyRegistration,
     PumpWaker, SingleInstance,
 };
-
-#[cfg(any(windows, target_os = "macos"))]
-pub use imp::{register_pause_hotkey, take_pause_hotkey_press, PauseHotkeyRegistration};
 
 /// Icon/severity of a blocking dialog. On Windows this maps 1:1 onto
 /// `MB_ICONINFORMATION` / `MB_ICONWARNING`.
@@ -69,6 +63,9 @@ pub enum ConfirmButtons {
 /// `YesNoCancel` variant" shape is realized as this dedicated entry point
 /// instead, because a button set the bool-returning `confirm()` cannot
 /// answer honestly would be dead API surface (amended there).
+// On Linux the stub dialogs answer only `Dismissed` (the recorded LIN-1
+// gap), so the other variants are matched but never constructed there.
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ConfirmAnswer {
     Positive,

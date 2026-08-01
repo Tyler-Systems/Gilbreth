@@ -1,0 +1,19 @@
+[package]
+name = "gilbreth-capture-linux"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+crossbeam-channel.workspace = true
+gilbreth-core = { path = "../gilbreth-core" }
+libc.workspace = true
+tracing.workspace = true
+
+# The X11 seam (LIN-1 dependency decision, workspace manifest): pure-Rust
+# protocol, no C linkage. Extensions: xinput for XI2 raw input,
+# screensaver for the X idle clock. EWMH, XGrabKey, and the root-geometry
+# display shape are core protocol.
+[target.'cfg(target_os = "linux")'.dependencies]
+x11rb = { workspace = true, features = ["screensaver", "xinput"] }
+xkeysym.workspace = true

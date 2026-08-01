@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/gilbreth-app",
+    "crates/gilbreth-capture-linux",
     "crates/gilbreth-capture-macos",
     "crates/gilbreth-capture-windows",
     "crates/gilbreth-core",
@@ -31,6 +32,18 @@ egui_kittest = { version = "=0.35.0", features = ["eframe", "snapshot", "wgpu"] 
 # Python 3.12 / Unicode 15.0 oracle. Keep exact until that oracle advances.
 icu_casemap = "=1.5.1"
 icu_casemap_data = "=1.5.1"
+# LIN-1 tray: StatusNotifierItem + dbusmenu, keeping LIN-0's deliberate
+# GTK/libappindicator exclusion standing (the Xfce panel hosts SNI natively,
+# verified live on the dogfood machine). zbus 5 is already compiled into the
+# Linux build via accesskit's AT-SPI backend, so the D-Bus stack lineage is
+# unchanged; ksni itself (iovxw/ksni, active) is the one new vendor. Default
+# features are OFF because ksni defaults to tokio — which this workspace
+# explicitly does not use (§10) — so it runs on the async-io stack already
+# in the tree, consumed through its blocking API (threads, not async).
+ksni = { version = "0.3", default-features = false, features = [
+    "async-io",
+    "blocking",
+] }
 libc = "0.2"
 # Mac framework bindings: the objc2 family is already in the tree via
 # eframe/winit, so these add no new vendor lineage to the workspace.
@@ -101,3 +114,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 tray-icon = "0.24"
 uuid = { version = "1", features = ["v4"] }
 windows = "0.62"
+# LIN-1 X11 bindings: pure-Rust X protocol implementation — no libX11/libxcb
+# C linkage — already in the Linux build at this version via arboard and
+# winit, so no new vendor lineage (psychon/x11rb, the objc2-family argument).
+# Feature (extension) selection stays with the capture crate per §10.
+x11rb = "0.13"
+# LIN-1 key names: X keysym constants for the keycode-to-shared-vocabulary
+# table. Already in the tree via winit (rust-windowing) — lineage unchanged.
+xkeysym = "0.2"

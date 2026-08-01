@@ -29,10 +29,9 @@ impl Default for HotkeyConfig {
     }
 }
 
-// Everything from here through `registration_failure_alert` is driven only
-// by the Windows registration path today; it stays compiled (and unit-tested)
-// on every platform because the parsing and status logic is portable.
-#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
+// Everything from here through `registration_failure_alert` is shared by
+// the three per-platform registration paths (RegisterHotKey, Carbon,
+// XGrabKey); the parsing and status logic is portable.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HotkeyKey {
     Letter(char),
@@ -83,7 +82,6 @@ impl fmt::Display for HotkeyKey {
     }
 }
 
-#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PauseHotkeyChord {
     pub ctrl: bool,
@@ -122,14 +120,12 @@ impl fmt::Display for PauseHotkeyChord {
     }
 }
 
-#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PauseHotkeySetting {
     Disabled,
     Enabled(PauseHotkeyChord),
 }
 
-#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ResolvedPauseHotkey {
     pub setting: PauseHotkeySetting,
@@ -139,7 +135,6 @@ pub struct ResolvedPauseHotkey {
     pub warning: Option<&'static str>,
 }
 
-#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
 pub fn resolve_pause_hotkey(value: &str) -> ResolvedPauseHotkey {
     if value.trim().is_empty() {
         return ResolvedPauseHotkey {
@@ -161,12 +156,10 @@ pub fn resolve_pause_hotkey(value: &str) -> ResolvedPauseHotkey {
     }
 }
 
-#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
 fn default_pause_hotkey() -> PauseHotkeyChord {
     parse_pause_hotkey(DEFAULT_PAUSE_RESUME_HOTKEY).expect("built-in pause hotkey is valid")
 }
 
-#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
 fn parse_pause_hotkey(value: &str) -> Result<PauseHotkeyChord, ()> {
     let parts = value.split('+').map(str::trim).collect::<Vec<_>>();
     if parts.len() < 2 || parts.iter().any(|part| part.is_empty()) {
@@ -219,7 +212,6 @@ fn parse_pause_hotkey(value: &str) -> Result<PauseHotkeyChord, ()> {
     })
 }
 
-#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
 fn parse_key(value: &str) -> Option<HotkeyKey> {
     let mut chars = value.chars();
     if let (Some(single), None) = (chars.next(), chars.next()) {
@@ -276,7 +268,6 @@ pub struct PauseHotkeyStatus {
 }
 
 impl PauseHotkeyStatus {
-    #[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
     pub fn registered(chord: PauseHotkeyChord) -> Self {
         Self {
             version: HOTKEY_STATUS_VERSION,
@@ -285,7 +276,6 @@ impl PauseHotkeyStatus {
         }
     }
 
-    #[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
     pub fn disabled() -> Self {
         Self {
             version: HOTKEY_STATUS_VERSION,
@@ -294,7 +284,6 @@ impl PauseHotkeyStatus {
         }
     }
 
-    #[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
     pub fn unregistered(chord: PauseHotkeyChord) -> Self {
         Self {
             version: HOTKEY_STATUS_VERSION,
@@ -322,7 +311,6 @@ pub fn read_status(path: &Path) -> Option<PauseHotkeyStatus> {
     (status.version == HOTKEY_STATUS_VERSION).then_some(status)
 }
 
-#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
 pub fn write_status(path: &Path, status: &PauseHotkeyStatus) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -341,7 +329,6 @@ pub fn write_status(path: &Path, status: &PauseHotkeyStatus) -> std::io::Result<
     result
 }
 
-#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
 pub fn registration_failure_alert(chord: PauseHotkeyChord) -> String {
     // copy-allow: em-dash one prose em dash within the per-string cap (Lane B ruling)
     format!(
