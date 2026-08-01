@@ -21,7 +21,7 @@ use std::{
 use anyhow::{anyhow, Context, Result};
 use crossbeam_channel::Sender;
 use gilbreth_core::{CaptureControls, CaptureError, Captured, StopToken};
-use tracing::warn;
+use tracing::{info, warn};
 
 use super::{AlertKind, ConfirmAnswer, ConfirmButtons};
 use crate::hotkey::{HotkeyKey, PauseHotkeyChord};
@@ -426,8 +426,18 @@ pub fn confirm(
 /// Stub three-way confirm: `Dismissed` is the do-nothing outcome, matching
 /// the first-run consent design's rule that the safe path is also the
 /// deferral path.
+///
+/// Logged at info, unlike its `alert`/`confirm` neighbours. Its one caller
+/// is first-run consent, whose deferral is the *designed* Linux outcome —
+/// capture runs lean and asks again next launch — so it recurs every
+/// launch, and at warn it would put every Linux run permanently in the
+/// Diagnostics REVIEW state (the classifier counts levels, not text) and
+/// drain the signal from real warnings. `confirm` stays at warn: there a
+/// declined dialog means a destructive action the user asked for did not
+/// happen. The message is unchanged, so the log still records that no
+/// consent dialog was seen.
 pub fn confirm_three_way(title: &str, message: &str, kind: AlertKind) -> ConfirmAnswer {
-    warn!(
+    info!(
         title,
         message,
         ?kind,

@@ -139,7 +139,16 @@ const NOTIFICATION_ACCESS_MENU_ID: &str = "notification_access";
 const LAUNCH_AT_STARTUP_MENU_ID: &str = "launch_at_startup";
 const QUIT_MENU_ID: &str = "quit";
 const GILBRETH_LOG_ENV: &str = "GILBRETH_LOG";
+#[cfg(not(target_os = "linux"))]
 const DEFAULT_LOG_FILTER: &str = "info";
+// The Linux tray's D-Bus stack logs a `NameLost` parse warning every time
+// the process exits (the socket closes under its name monitor mid-read).
+// It is shutdown chatter from the dependency, not a Gilbreth condition,
+// but the health classifier counts levels rather than text — so left at
+// warn it would put every Linux run permanently in REVIEW and drain the
+// signal from real warnings. Errors from the same stack still surface.
+#[cfg(target_os = "linux")]
+const DEFAULT_LOG_FILTER: &str = "info,zbus::connection=error";
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 const GIT_SHA: &str = env!("GILBRETH_GIT_SHA");
 
