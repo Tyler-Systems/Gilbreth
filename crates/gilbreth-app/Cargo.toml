@@ -23,8 +23,18 @@ toml_edit.workspace = true
 tracing.workspace = true
 tracing-appender.workspace = true
 tracing-subscriber.workspace = true
-tray-icon.workspace = true
 uuid.workspace = true
+
+# LIN-0: the tray is a product-platform surface. The Linux viewer build has
+# no tray, and tray-icon's Linux backend links GTK/libappindicator — a
+# system-library lineage the viewer must not require.
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
+tray-icon.workspace = true
+
+# LIN-0 viewer seam: flock guards, gethostname, and the SIGTERM latch.
+# Already in the workspace via the macOS backend — no new vendor lineage.
+[target.'cfg(target_os = "linux")'.dependencies]
+libc.workspace = true
 
 # Per-target capture backend + platform APIs behind src/platform (MAC-0).
 [target.'cfg(windows)'.dependencies]

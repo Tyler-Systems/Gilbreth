@@ -10,6 +10,10 @@
 //! macOS backend is the MAC-0 seam implementation: real paths, lockfile
 //! single instance, and POSIX rename; dialogs and the capture pump are
 //! honest stubs until MAC-1 (NSAlert, CFRunLoop + real event sources).
+//! The Linux backend is the LIN-0 viewer seam: real paths and guards for
+//! the `--dashboard` process, stub dialogs, and a capture pump that
+//! declines (`CaptureError::UnsupportedPlatform`) behind `run()`'s Linux
+//! stub — a development viewer, not a product platform.
 
 #[cfg(windows)]
 #[path = "windows.rs"]
@@ -19,6 +23,14 @@ mod imp;
 #[path = "macos.rs"]
 mod imp;
 
+#[cfg(target_os = "linux")]
+#[path = "linux.rs"]
+mod imp;
+
+// LIN-0: the viewer build consumes only the dashboard-path names; the
+// capture-pass names go dormant with the gated `run()` but stay exported,
+// because a backend that only half-implements the facade is not a backend.
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(unused_imports))]
 pub use imp::{
     alert, confirm, confirm_three_way, current_permission_state, downloads_dir, init_app_shell,
     init_permission_baseline, init_termination_signal, is_other_session_instance_error,

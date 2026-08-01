@@ -1,4 +1,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// LIN-0 (Linux viewer build): the capture shell — tray, service pass, the
+// privacy/record dialog flows — compiles dormant on Linux behind the
+// gated `run()`, so the dead-code lint would flag half this file there.
+// The lint stays live on the product platforms.
+#![cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
 
 #[cfg(windows)]
 mod authenticode;
@@ -35,7 +40,6 @@ use std::{
     ffi::OsStr,
     fs,
     io::{Seek, SeekFrom, Write},
-    panic::{self, AssertUnwindSafe},
     path::{Path, PathBuf},
     process::{Command, ExitStatus},
     sync::{
@@ -46,6 +50,11 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+// Consumed only by the capture shell (`run()`, `Tray`), which the LIN-0
+// viewer build gates out.
+#[cfg(any(windows, target_os = "macos"))]
+use std::panic::{self, AssertUnwindSafe};
+
 use anyhow::{anyhow, Context, Result};
 use config::{AppConfig, ConfigStatus};
 use crossbeam_channel::{bounded, select, Receiver, Sender};
@@ -53,23 +62,32 @@ use crossbeam_channel::{bounded, select, Receiver, Sender};
 use gilbreth_capture_windows::record_routine::{
     start_record_routine_capture, RecordRoutineConfig, RecordRoutineHandle,
 };
+// `test` too: the record-flow tests exercise the portable command lane on
+// every platform, including the LIN-0 viewer build.
+#[cfg(any(windows, target_os = "macos", test))]
 use gilbreth_core::RecordStopReason;
 use gilbreth_core::{
-    CaptureControls, CaptureStream, Captured, EventPayload, Sequencer, SessionTimebase, Source,
-    StopToken, WriterInput,
+    CaptureControls, CaptureStream, Captured, EventPayload, Source, StopToken, WriterInput,
 };
+#[cfg(any(windows, target_os = "macos"))]
+use gilbreth_core::{Sequencer, SessionTimebase};
+#[cfg(any(windows, target_os = "macos"))]
+use gilbreth_store::run_writer_with_commands;
 use gilbreth_store::{
-    run_writer_with_commands, ArchiveResetOutcome, ArchiveResetReport, CapPrompt, GilbrethStore,
-    PanicActionCutoff, PendingRecordRequest, SecureEraseOutcome, SecureEraseReport,
-    SessionIdentity, StoreError, WriterCommand, WriterReport,
+    ArchiveResetOutcome, ArchiveResetReport, CapPrompt, GilbrethStore, PanicActionCutoff,
+    PendingRecordRequest, SecureEraseOutcome, SecureEraseReport, SessionIdentity, StoreError,
+    WriterCommand, WriterReport,
 };
+#[cfg(any(windows, target_os = "macos"))]
+use platform::SingleInstance;
 use platform::{
     alert, confirm, downloads_dir, local_data_dir, local_host_name, AlertKind, ConfirmButtons,
-    DashboardUiStateOwner, LifecycleGuard, PumpWaker, SingleInstance,
+    DashboardUiStateOwner, LifecycleGuard, PumpWaker,
 };
 use tracing::{debug, error, info, warn};
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::EnvFilter;
+#[cfg(any(windows, target_os = "macos"))]
 use tray_icon::{
     menu::{CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu},
     Icon, TrayIcon, TrayIconBuilder,
@@ -1115,6 +1133,17 @@ fn collision_free_path(dir: &Path, filename: &str) -> Result<PathBuf, String> {
     ))
 }
 
+/// LIN-0: Linux builds are dashboard viewers. Ambient capture has no Linux
+/// backend, so the capture process declines rather than starting a pipeline
+/// with no sources; `--dashboard` routes before this in `main`.
+#[cfg(not(any(windows, target_os = "macos")))]
+fn run() -> Result<()> {
+    Err(anyhow!(
+        "ambient capture is not implemented on Linux; open the dashboard with `gilbreth-app --dashboard`"
+    ))
+}
+
+#[cfg(any(windows, target_os = "macos"))]
 fn run() -> Result<()> {
     let _lifecycle = LifecycleGuard::acquire_shared()
         .context("failed to acquire shared package lifecycle guard")?;
@@ -1730,6 +1759,7 @@ fn resume_capture_after_quiet(
     Err(last_error)
 }
 
+#[cfg(any(windows, target_os = "macos"))]
 struct Tray {
     _menu: Menu,
     _capture_menu: Submenu,
@@ -1863,6 +1893,7 @@ enum RecordUiEvent {
     },
 }
 
+#[cfg(any(windows, target_os = "macos"))]
 impl Tray {
     fn new(
         stop: StopToken,
@@ -4783,6 +4814,7 @@ fn show_secure_erase_report(
     alert(DIALOG_TITLE_SECURE_ERASE, &message, kind);
 }
 
+#[cfg(any(windows, target_os = "macos"))]
 fn create_icon() -> Result<Icon> {
     const ICON_SIZE: usize = 32;
     // macOS status items are template images (shell-remainders slice): a
@@ -4839,12 +4871,14 @@ fn template_icon_rgba(size: usize) -> Vec<u8> {
     rgba
 }
 
+#[cfg(any(windows, target_os = "macos"))]
 fn create_recording_icon() -> Result<Icon> {
     const ICON_SIZE: usize = 32;
     let rgba = record_icon_rgba(ICON_SIZE, RecordIconState::Recording);
     Icon::from_rgba(rgba, ICON_SIZE as u32, ICON_SIZE as u32).context("invalid recording tray icon")
 }
 
+#[cfg(any(windows, target_os = "macos"))]
 fn create_paused_recording_icon() -> Result<Icon> {
     const ICON_SIZE: usize = 32;
     let rgba = record_icon_rgba(ICON_SIZE, RecordIconState::Paused);

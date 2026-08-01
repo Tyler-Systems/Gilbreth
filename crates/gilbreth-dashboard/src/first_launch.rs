@@ -24,6 +24,9 @@ pub(crate) fn window_geometry_is_persisted(storage: Option<&dyn eframe::Storage>
 }
 
 /// One rectangle in physical pixels, `(x, y, width, height)`.
+// Consumed at runtime only by the Windows work-area fit below; the geometry
+// tests keep it honest on every platform.
+#[cfg_attr(not(windows), allow(dead_code))]
 type Rect = (i32, i32, i32, i32);
 
 /// Where the first-launch window should move, if anywhere. `None` means the
@@ -32,6 +35,7 @@ type Rect = (i32, i32, i32, i32);
 /// centers; one that fits but hangs outside translates the shortest
 /// distance back in. Degenerate work areas (zero or negative extent) fit
 /// nothing.
+#[cfg_attr(not(windows), allow(dead_code))]
 fn fit_outer_rect(outer: Rect, work: Rect) -> Option<Rect> {
     let (x, y, width, height) = outer;
     let (work_x, work_y, work_width, work_height) = work;
