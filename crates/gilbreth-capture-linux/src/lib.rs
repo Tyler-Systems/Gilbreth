@@ -14,7 +14,10 @@
 //! approximating. Mirrors `gilbreth-capture-windows`'s crate-level target
 //! gate, so non-Linux workspace builds see an empty shell here.
 
+mod foreground;
 mod hotkey;
+mod idle;
+mod xserver;
 
 pub use hotkey::{
     register_pause_hotkey_grab, take_pause_hotkey_press, PauseChordModifiers, PauseHotkeyGrab,
@@ -27,12 +30,13 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc, RwLock,
     },
+    time::Instant,
 };
 
 use crossbeam_channel::{Sender, TrySendError};
 use gilbreth_core::{CaptureControls, CaptureError, Captured, StopToken};
 use tracing::{debug, info, warn};
-use x11rb::connection::Connection;
+use x11rb::{connection::Connection, protocol::Event, rust_connection::RustConnection};
 
 /// Longest the loop sleeps between service ticks when nothing fires — the
 /// macOS pump's cadence (its MAC-0 heritage), so tray responsiveness is
@@ -118,7 +122,6 @@ pub fn stop_pump() {
 /// never blocks the pump, and the shared dropped counter under backpressure
 /// — with the macOS quietenings (no per-event warn on a full channel, one
 /// bounded end-of-run warning instead).
-#[allow(dead_code)] // consumed by the stream slices
 fn send_captured(tx: &Sender<Captured>, controls: &CaptureControls, captured: Captured) {
     if !controls.enabled_for(&captured) {
         debug!("capture stream disabled; dropping event before enqueue");
@@ -198,6 +201,76 @@ fn wait_for_activity(x_fd: RawFd, wake_fd: RawFd) {
     }
 }
 
+/// One pass's translated X-event yield, produced by the io seam.
+#[derive(Clone, Copy, Debug, Default)]
+struct PumpSignals {
+    /// A root `PropertyNotify` named `_NET_ACTIVE_WINDOW` this pass.
+    focus_dirty: bool,
+    /// The X connection died; the pump must exit rather than spin.
+    connection_lost: bool,
+}
+
+/// The pump's io seam: the production implementation is the X connection
+/// beside the self-pipe; tests script it so the full loop runs without an
+/// X server.
+trait PumpIo {
+    /// Drain everything queued and translate it, so a burst is handled in
+    /// one pass rather than one event per tick.
+    fn drain(&mut self) -> PumpSignals;
+    /// Block until activity or the service interval elapses, consuming any
+    /// pending wake.
+    fn wait(&mut self);
+}
+
+struct XIo {
+    conn: Arc<RustConnection>,
+    atoms: xserver::Atoms,
+    wake_read: OwnedFd,
+}
+
+impl PumpIo for XIo {
+    fn drain(&mut self) -> PumpSignals {
+        let mut signals = PumpSignals::default();
+        loop {
+            match self.conn.poll_for_event() {
+                Ok(Some(Event::PropertyNotify(notify)))
+                    if notify.atom == self.atoms._NET_ACTIVE_WINDOW =>
+                {
+                    signals.focus_dirty = true;
+                }
+                Ok(Some(_)) => {}
+                Ok(None) => break,
+                Err(error) => {
+                    warn!(%error, "X connection failed; capture pump exiting");
+                    signals.connection_lost = true;
+                    return signals;
+                }
+            }
+        }
+        if let Err(error) = self.conn.flush() {
+            warn!(%error, "X connection flush failed; capture pump exiting");
+            signals.connection_lost = true;
+        }
+        signals
+    }
+
+    fn wait(&mut self) {
+        wait_for_activity(
+            self.conn.stream().as_fd().as_raw_fd(),
+            self.wake_read.as_raw_fd(),
+        );
+        drain_wake_pipe(self.wake_read.as_fd());
+    }
+}
+
+/// The pump's capture providers, injected so tests drive scripted state
+/// through the real pump loop without an X server (the macOS `Sources`
+/// pattern).
+struct Sources<AW, ID> {
+    active_window: AW,
+    idle: ID,
+}
+
 /// Run the capture pump on the current thread until the stop token cancels
 /// or [`stop_pump`] is called. Services `after_service` after every wake,
 /// X event batch, or timeout, mirroring the Windows pump's per-message
@@ -208,17 +281,22 @@ pub fn run_pump<F>(
     tx: Sender<Captured>,
     stop: StopToken,
     controls: CaptureControls,
-    mut after_service: F,
+    after_service: F,
 ) -> Result<(), CaptureError>
 where
     F: FnMut(),
 {
-    // Suppress the unused warnings until the stream slices consume these.
-    let _ = (&tx, &controls);
-
-    let (conn, _screen) = x11rb::connect(None).map_err(|error| {
+    let (conn, screen_num) = x11rb::connect(None).map_err(|error| {
         CaptureError::Source(format!("cannot connect to the X server: {error}").into())
     })?;
+    let conn = Arc::new(conn);
+    let root = conn.setup().roots[screen_num].root;
+    let atoms = xserver::Atoms::new(&*conn)
+        .map_err(|error| CaptureError::Source(format!("atom interning failed: {error}").into()))?
+        .reply()
+        .map_err(|error| CaptureError::Source(format!("atom interning failed: {error}").into()))?;
+    xserver::select_root_property_events(&conn, root)
+        .map_err(|error| CaptureError::Source(error.into()))?;
 
     let (wake_read, wake_write) = wake_pipe()?;
     let stop_requested = Arc::new(AtomicBool::new(false));
@@ -236,42 +314,101 @@ where
     }
     let _registration = RegistrationGuard;
 
-    info!("Linux capture pump running: X11 connection + self-pipe waker (LIN-1 shell)");
+    info!(
+        "Linux capture pump running: X11 connection + self-pipe waker + \
+         EWMH foreground and X idle clock streams"
+    );
 
-    let x_fd = conn.stream().as_fd().as_raw_fd();
+    let reader = xserver::XReader::new(Arc::clone(&conn), root, atoms);
+    let idle_reader = reader.clone();
+    run_pump_loop(
+        tx,
+        stop,
+        stop_requested,
+        controls,
+        after_service,
+        XIo {
+            conn,
+            atoms,
+            wake_read,
+        },
+        Sources {
+            active_window: move || reader.active_window(),
+            idle: move || idle_reader.idle_ms(),
+        },
+    )
+}
+
+fn run_pump_loop<F, IO, AW, ID>(
+    tx: Sender<Captured>,
+    stop: StopToken,
+    stop_requested: Arc<AtomicBool>,
+    controls: CaptureControls,
+    mut after_service: F,
+    mut io: IO,
+    sources: Sources<AW, ID>,
+) -> Result<(), CaptureError>
+where
+    F: FnMut(),
+    IO: PumpIo,
+    AW: FnMut() -> Option<foreground::ActiveWindow>,
+    ID: FnMut() -> Option<u64>,
+{
+    let mut foreground_monitor = foreground::ForegroundMonitor::new(sources.active_window);
+    let mut idle_monitor = idle::IdleMonitor::new(controls.idle_threshold(), sources.idle);
+    let mut pending_events = Vec::new();
+    let mut last_noted_pid: Option<u32> = None;
+
     let result = loop {
         if stop.is_cancelled() || stop_requested.load(Ordering::SeqCst) {
             break Ok(());
         }
-
-        // Drain everything the X server has queued before servicing, so a
-        // burst is handled in one pass rather than one event per tick.
-        loop {
-            match conn.poll_for_event() {
-                Ok(Some(_event)) => {
-                    // Stream slices route events here.
-                }
-                Ok(None) => break,
-                Err(error) => {
-                    warn!(%error, "X connection failed; capture pump exiting");
-                    break;
-                }
-            }
-        }
-        if let Err(error) = conn.flush() {
-            break Err(CaptureError::Source(
-                format!("X connection flush failed: {error}").into(),
-            ));
+        let signals = io.drain();
+        if signals.connection_lost {
+            break Err(CaptureError::Source("X connection lost".into()));
         }
 
         after_service();
 
+        let now = Instant::now();
+        let settings = controls.settings();
+        let suspended = controls.is_suspended();
+        let fg_gate = if settings.foreground && !suspended {
+            foreground::PollGate::Enabled
+        } else {
+            foreground::PollGate::PausedByUser
+        };
+        foreground_monitor.poll(now, fg_gate, signals.focus_dirty, &mut pending_events);
+        // The churn filter's focus rescue (Windows `note_focused_app`,
+        // ported): record the active exe once per process change so the
+        // process stream keeps this app's start/exit rows.
+        if let Some(window) = foreground_monitor.current_window() {
+            if last_noted_pid != Some(window.pid) {
+                last_noted_pid = Some(window.pid);
+                if !window.exe.is_empty() {
+                    controls.note_foreground_exe(&window.exe);
+                }
+            }
+        }
+        idle_monitor.poll(now, settings.idle && !suspended, &mut pending_events);
+
+        for captured in pending_events.drain(..) {
+            send_captured(&tx, &controls, captured);
+        }
+
         if stop.is_cancelled() || stop_requested.load(Ordering::SeqCst) {
             break Ok(());
         }
-        wait_for_activity(x_fd, wake_read.as_raw_fd());
-        drain_wake_pipe(wake_read.as_fd());
+        io.wait();
     };
+
+    // Shutdown flush: attribute the final foreground dwell, exactly as the
+    // Windows and macOS pumps' shutdown flushes do.
+    let mut shutdown_events = Vec::new();
+    foreground_monitor.flush_at(Instant::now(), &mut shutdown_events);
+    for captured in shutdown_events {
+        send_captured(&tx, &controls, captured);
+    }
 
     let dropped = controls.diagnostics().capture_events_dropped();
     if dropped > 0 {
@@ -369,5 +506,78 @@ mod tests {
         assert!(pump_read().is_none());
         wake_pump();
         stop_pump();
+    }
+
+    /// A scripted io seam: pass 1 reports the focus-dirty edge, and the
+    /// stop token cancels after a fixed pass count — the whole loop runs
+    /// without an X server.
+    struct ScriptedIo {
+        passes: u32,
+        dirty_on_pass: u32,
+        stop_after: u32,
+        stop: StopToken,
+    }
+
+    impl PumpIo for ScriptedIo {
+        fn drain(&mut self) -> PumpSignals {
+            self.passes += 1;
+            let mut signals = PumpSignals::default();
+            if self.passes == self.dirty_on_pass {
+                signals.focus_dirty = true;
+            }
+            if self.passes >= self.stop_after {
+                self.stop.cancel();
+            }
+            signals
+        }
+
+        fn wait(&mut self) {}
+    }
+
+    #[test]
+    fn scripted_loop_emits_focus_rows_notes_the_exe_and_flushes_on_shutdown() {
+        let (tx, rx) = bounded(16);
+        let stop = StopToken::new();
+        let controls = CaptureControls::all_enabled();
+        let io = ScriptedIo {
+            passes: 0,
+            dirty_on_pass: 1,
+            stop_after: 3,
+            stop: stop.clone(),
+        };
+        run_pump_loop(
+            tx,
+            stop,
+            Arc::new(AtomicBool::new(false)),
+            controls.clone(),
+            || {},
+            io,
+            Sources {
+                active_window: || {
+                    Some(foreground::ActiveWindow {
+                        xid: 42,
+                        pid: 4242,
+                        exe: "/usr/bin/editor".to_string(),
+                        title: "notes".to_string(),
+                    })
+                },
+                idle: || Some(0),
+            },
+        )
+        .expect("scripted pump exits cleanly");
+
+        let mut kinds = Vec::new();
+        while let Ok(captured) = rx.try_recv() {
+            kinds.push(captured.payload.kind());
+        }
+        assert_eq!(
+            kinds,
+            vec!["focus_changed", "focus_changed"],
+            "the dirty pass seeds the segment; the shutdown flush closes it"
+        );
+        assert!(
+            controls.foreground_exe_seen("editor"),
+            "the churn-filter focus rescue noted the active exe"
+        );
     }
 }
