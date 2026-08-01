@@ -171,6 +171,16 @@ impl XReader {
         Some((i32::from(reply.root_x), i32::from(reply.root_y)))
     }
 
+    /// The virtual-screen bounding box: the root window's geometry, which
+    /// the server resizes across RandR changes.
+    pub(crate) fn virtual_screen(&self) -> Option<crate::system::VirtualScreenRect> {
+        let reply = self.conn.get_geometry(self.root).ok()?.reply().ok()?;
+        Some(crate::system::VirtualScreenRect {
+            width: i32::from(reply.width),
+            height: i32::from(reply.height),
+        })
+    }
+
     /// The current keycode-to-keysym table, rebuilt on `MappingNotify`.
     pub(crate) fn keymap(&self) -> Option<Keymap> {
         let setup = self.conn.setup();

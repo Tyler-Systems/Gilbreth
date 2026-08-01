@@ -159,7 +159,7 @@ pub(crate) fn process_snapshot() -> Option<Vec<crate::process::ProcessSnapshotEn
                 std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int,
             )
         };
-        let (comm, start_time_us) = if got == std::mem::size_of::<libc::proc_bsdinfo>() as i32 {
+        let (comm, start_time_id) = if got == std::mem::size_of::<libc::proc_bsdinfo>() as i32 {
             let comm_bytes: Vec<u8> = info
                 .pbi_comm
                 .iter()
@@ -183,7 +183,7 @@ pub(crate) fn process_snapshot() -> Option<Vec<crate::process::ProcessSnapshotEn
             pid: pid as u32,
             comm,
             path,
-            start_time_us,
+            start_time_id,
         });
     }
     (!entries.is_empty()).then_some(entries)

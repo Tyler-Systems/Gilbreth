@@ -731,7 +731,7 @@ mod tests {
             pid: 1,
             comm: "launchd".to_string(),
             path: Some("/sbin/launchd".to_string()),
-            start_time_us: Some(1),
+            start_time_id: Some(1),
         }])
     }
 
@@ -1910,7 +1910,7 @@ mod tests {
             pid: 1,
             comm: "launchd".to_string(),
             path: Some("/sbin/launchd".to_string()),
-            start_time_us: Some(1),
+            start_time_id: Some(1),
         };
         let sweeps: std::collections::VecDeque<Vec<process::ProcessSnapshotEntry>> = [
             vec![launchd.clone()],
@@ -1920,13 +1920,13 @@ mod tests {
                     pid: 700,
                     comm: "A".to_string(),
                     path: Some(focused_exe.to_string()),
-                    start_time_us: Some(50),
+                    start_time_id: Some(50),
                 },
                 process::ProcessSnapshotEntry {
                     pid: 901,
                     comm: "noised".to_string(),
                     path: Some("/usr/libexec/noised".to_string()),
-                    start_time_us: Some(60),
+                    start_time_id: Some(60),
                 },
             ],
         ]

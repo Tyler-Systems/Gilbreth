@@ -19,6 +19,8 @@ mod hotkey;
 mod idle;
 mod keyboard;
 mod mouse;
+mod process;
+mod system;
 mod xserver;
 
 pub use hotkey::{
@@ -387,13 +389,19 @@ impl PumpIo for XIo {
 /// The pump's capture providers, injected so tests drive scripted state
 /// through the real pump loop without an X server (the macOS `Sources`
 /// pattern).
-struct Sources<AW, ID, KM, PP> {
+struct Sources<AW, ID, KM, PP, VS, SI, PR> {
     active_window: AW,
     idle: ID,
     /// The keymap read, called at start and on `keymap_dirty`.
     keymap: KM,
     /// The per-pass pointer-position sample (raw events carry none).
     pointer_position: PP,
+    /// The virtual-screen shape (root geometry), on the 1 s cadence.
+    screen: VS,
+    /// The one-shot host identity payload.
+    info: SI,
+    /// The procfs sweep; the shared core monitor throttles the cadence.
+    processes: PR,
 }
 
 /// Run the capture pump on the current thread until the stop token cancels
@@ -444,13 +452,15 @@ where
 
     info!(
         "Linux capture pump running: X11 connection + self-pipe waker + \
-         EWMH foreground, X idle clock, and XI2 raw keyboard/mouse streams"
+         EWMH foreground, X idle clock, XI2 raw keyboard/mouse, display \
+         shape, and procfs process streams"
     );
 
     let reader = xserver::XReader::new(Arc::clone(&conn), root, atoms);
     let idle_reader = reader.clone();
     let keymap_reader = reader.clone();
     let pointer_reader = reader.clone();
+    let screen_reader = reader.clone();
     run_pump_loop(
         tx,
         stop,
@@ -468,18 +478,21 @@ where
             idle: move || idle_reader.idle_ms(),
             keymap: move || keymap_reader.keymap(),
             pointer_position: move || pointer_reader.pointer_position(),
+            screen: move || screen_reader.virtual_screen(),
+            info: system::system_info,
+            processes: process::process_snapshot,
         },
     )
 }
 
-fn run_pump_loop<F, IO, AW, ID, KM, PP>(
+fn run_pump_loop<F, IO, AW, ID, KM, PP, VS, SI, PR>(
     tx: Sender<Captured>,
     stop: StopToken,
     stop_requested: Arc<AtomicBool>,
     controls: CaptureControls,
     mut after_service: F,
     mut io: IO,
-    mut sources: Sources<AW, ID, KM, PP>,
+    mut sources: Sources<AW, ID, KM, PP, VS, SI, PR>,
 ) -> Result<(), CaptureError>
 where
     F: FnMut(),
@@ -488,9 +501,14 @@ where
     ID: FnMut() -> Option<u64>,
     KM: FnMut() -> Option<keyboard::Keymap>,
     PP: FnMut() -> Option<(i32, i32)>,
+    VS: FnMut() -> Option<system::VirtualScreenRect>,
+    SI: FnMut() -> gilbreth_core::EventPayload,
+    PR: FnMut() -> Option<Vec<gilbreth_core::ProcessSnapshotEntry>>,
 {
     let mut foreground_monitor = foreground::ForegroundMonitor::new(sources.active_window);
     let mut idle_monitor = idle::IdleMonitor::new(controls.idle_threshold(), sources.idle);
+    let mut system_monitor = system::SystemMonitor::new(sources.screen, sources.info);
+    let mut process_monitor = gilbreth_core::ProcessMonitor::new(Instant::now());
     let mut keyboard_state = keyboard::KeyboardState::new();
     let mut mouse_state = mouse::MouseState::new();
     let mut keymap: Option<keyboard::Keymap> = None;
@@ -511,6 +529,11 @@ where
         let now = Instant::now();
         let settings = controls.settings();
         let suspended = controls.is_suspended();
+        // System first (the macOS ordering), then the process sweep — both
+        // gate rows at `send` while their state advances regardless.
+        let system_stream = settings.system && !suspended;
+        system_monitor.poll(now, system_stream, &mut pending_events);
+        process_monitor.poll(now, &controls, &mut sources.processes, &mut pending_events);
         let fg_gate = if settings.foreground && !suspended {
             foreground::PollGate::Enabled
         } else {
@@ -587,10 +610,11 @@ where
         io.wait();
     };
 
-    // Shutdown flush: attribute the final foreground dwell, exactly as the
-    // Windows and macOS pumps' shutdown flushes do.
+    // Shutdown flush: attribute the final foreground dwell and the partial
+    // churn window, exactly as the other pumps' shutdown flushes do.
     let mut shutdown_events = Vec::new();
     foreground_monitor.flush_at(Instant::now(), &mut shutdown_events);
+    process_monitor.flush(Instant::now(), &mut shutdown_events);
     for captured in shutdown_events {
         send_captured(&tx, &controls, captured);
     }
@@ -756,6 +780,9 @@ mod tests {
                 idle: || Some(0),
                 keymap: scripted_keymap,
                 pointer_position: || Some((10, 20)),
+                screen: || None,
+                info: system::system_info,
+                processes: || None,
             },
         )
         .expect("scripted pump exits cleanly");
@@ -766,8 +793,8 @@ mod tests {
         }
         assert_eq!(
             kinds,
-            vec!["focus_changed", "focus_changed"],
-            "the dirty pass seeds the segment; the shutdown flush closes it"
+            vec!["system_info", "focus_changed", "focus_changed"],
+            "the system seed and dirty-pass focus seed, then the shutdown close"
         );
         assert!(
             controls.foreground_exe_seen("editor"),
@@ -813,6 +840,9 @@ mod tests {
                 idle: || Some(0),
                 keymap: scripted_keymap,
                 pointer_position: || Some((10, 20)),
+                screen: || None,
+                info: system::system_info,
+                processes: || None,
             },
         )
         .expect("scripted pump exits cleanly");
@@ -825,6 +855,7 @@ mod tests {
         assert_eq!(
             kinds,
             vec![
+                "system_info",
                 "focus_changed",
                 "key",
                 "mouse_click",
@@ -832,7 +863,7 @@ mod tests {
                 "focus_changed"
             ]
         );
-        match &rows[1].payload {
+        match &rows[2].payload {
             gilbreth_core::EventPayload::Key { key, window, .. } => {
                 assert_eq!(key, "P");
                 let window = window.as_ref().expect("attributed to the active window");
@@ -841,7 +872,7 @@ mod tests {
             }
             other => panic!("expected key, got {other:?}"),
         }
-        match &rows[2].payload {
+        match &rows[3].payload {
             gilbreth_core::EventPayload::MouseClick { x, y, window, .. } => {
                 assert_eq!((*x, *y), (Some(10), Some(20)), "per-pass position sample");
                 assert_eq!(window.as_ref().expect("attributed").hwnd, 42);
