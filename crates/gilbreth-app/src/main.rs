@@ -4802,6 +4802,43 @@ fn show_secure_erase_report(
     alert(DIALOG_TITLE_SECURE_ERASE, &message, kind);
 }
 
+/// Transparent margin, in device pixels per edge, inside the tray icon's
+/// square canvas.
+///
+/// Zero on Windows and macOS: their shells hand the icon a box it already
+/// pads, and the brand mark is meant to fill it. A StatusNotifier panel
+/// instead scales the pixmap into its slot as-is, so an edge-to-edge tile
+/// sits flush against its neighbours — which are transparent glyphs with
+/// their own internal padding — and reads as oversized next to them
+/// (observed on the Xfce panel, 2026-08-01). Two pixels of a 32-pixel
+/// canvas is the smallest margin that visibly seats the mark without
+/// shrinking the glyph enough to soften its edges.
+#[cfg(target_os = "linux")]
+const TRAY_ICON_INSET: usize = 2;
+#[cfg(not(target_os = "linux"))]
+const TRAY_ICON_INSET: usize = 0;
+
+/// One supersample's position in the 32-unit design space, for a device
+/// pixel on a `size` canvas carrying `inset` pixels of margin per edge.
+///
+/// With `inset = 0` this is exactly the historical `(device + subpixel) *
+/// 32 / size`, so the Windows and macOS icons are unchanged by the
+/// parameter's existence — and the shell-asset parity test renders at
+/// zero inset on every platform to keep proving it. Margin pixels map
+/// outside the design space, where every shape test fails and the sample
+/// stays transparent, so the margin needs no special case of its own.
+fn icon_design_coord(
+    device: usize,
+    subpixel: usize,
+    samples: usize,
+    size: usize,
+    inset: usize,
+) -> f64 {
+    let artwork = (size - 2 * inset) as f64;
+    let offset = device as f64 + (subpixel as f64 + 0.5) / samples as f64;
+    (offset - inset as f64) * 32.0 / artwork
+}
+
 fn create_icon() -> Result<Icon> {
     const ICON_SIZE: usize = 32;
     // macOS status items are template images (shell-remainders slice): a
@@ -4872,12 +4909,15 @@ fn create_paused_recording_icon() -> Result<Icon> {
 }
 
 fn favicon_rgba(size: usize) -> Vec<u8> {
+    favicon_rgba_inset(size, TRAY_ICON_INSET)
+}
+
+fn favicon_rgba_inset(size: usize, inset: usize) -> Vec<u8> {
     const DARKROOM: [f64; 3] = [21.0, 23.0, 27.0]; // #15171B
     const AMBER: [f64; 3] = [242.0, 163.0, 60.0]; // #F2A33C
     const SAMPLES_PER_AXIS: usize = 4;
 
     let mut rgba = Vec::with_capacity(size * size * 4);
-    let scale = 32.0 / size as f64;
     let sample_count = (SAMPLES_PER_AXIS * SAMPLES_PER_AXIS) as f64;
 
     for y in 0..size {
@@ -4889,8 +4929,8 @@ fn favicon_rgba(size: usize) -> Vec<u8> {
 
             for sy in 0..SAMPLES_PER_AXIS {
                 for sx in 0..SAMPLES_PER_AXIS {
-                    let px = (x as f64 + (sx as f64 + 0.5) / SAMPLES_PER_AXIS as f64) * scale;
-                    let py = (y as f64 + (sy as f64 + 0.5) / SAMPLES_PER_AXIS as f64) * scale;
+                    let px = icon_design_coord(x, sx, SAMPLES_PER_AXIS, size, inset);
+                    let py = icon_design_coord(y, sy, SAMPLES_PER_AXIS, size, inset);
 
                     let color = if inside_circle(px, py, 16.0, 16.0, 6.5) {
                         Some(AMBER)
@@ -4926,13 +4966,16 @@ enum RecordIconState {
 }
 
 fn record_icon_rgba(size: usize, state: RecordIconState) -> Vec<u8> {
+    record_icon_rgba_inset(size, state, TRAY_ICON_INSET)
+}
+
+fn record_icon_rgba_inset(size: usize, state: RecordIconState, inset: usize) -> Vec<u8> {
     const DARKROOM: [f64; 3] = [21.0, 23.0, 27.0]; // #15171B
     const RED: [f64; 3] = [225.0, 62.0, 62.0]; // #E13E3E
     const AMBER: [f64; 3] = [242.0, 163.0, 60.0]; // #F2A33C
     const SAMPLES_PER_AXIS: usize = 4;
 
     let mut rgba = Vec::with_capacity(size * size * 4);
-    let scale = 32.0 / size as f64;
     let sample_count = (SAMPLES_PER_AXIS * SAMPLES_PER_AXIS) as f64;
 
     for y in 0..size {
@@ -4944,8 +4987,8 @@ fn record_icon_rgba(size: usize, state: RecordIconState) -> Vec<u8> {
 
             for sy in 0..SAMPLES_PER_AXIS {
                 for sx in 0..SAMPLES_PER_AXIS {
-                    let px = (x as f64 + (sx as f64 + 0.5) / SAMPLES_PER_AXIS as f64) * scale;
-                    let py = (y as f64 + (sy as f64 + 0.5) / SAMPLES_PER_AXIS as f64) * scale;
+                    let px = icon_design_coord(x, sx, SAMPLES_PER_AXIS, size, inset);
+                    let py = icon_design_coord(y, sy, SAMPLES_PER_AXIS, size, inset);
 
                     let color = if matches!(state, RecordIconState::Paused)
                         && ((10.0..=13.0).contains(&px) || (19.0..=22.0).contains(&px))
@@ -5001,6 +5044,88 @@ mod tests {
     use std::{process::Stdio, sync::Mutex};
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Alpha of one pixel in a `size`-square RGBA buffer.
+    fn icon_alpha(rgba: &[u8], size: usize, x: usize, y: usize) -> u8 {
+        rgba[(y * size + x) * 4 + 3]
+    }
+
+    #[test]
+    fn tray_icon_artwork_fills_exactly_the_canvas_inside_its_margin() {
+        const SIZE: usize = 32;
+        // Both reachable tray icons: the plain mark and the capture-paused
+        // one (Linux swaps to it on every pause, so a margin on only one
+        // would make the icon change size when paused).
+        for rgba in [
+            favicon_rgba(SIZE),
+            record_icon_rgba(SIZE, RecordIconState::Paused),
+        ] {
+            // Every margin pixel is fully transparent. Vacuous where the
+            // inset is zero (Windows/macOS), which is the point: the same
+            // assertion describes all three platforms.
+            for edge in 0..TRAY_ICON_INSET {
+                for along in 0..SIZE {
+                    for (x, y) in [
+                        (along, edge),
+                        (along, SIZE - 1 - edge),
+                        (edge, along),
+                        (SIZE - 1 - edge, along),
+                    ] {
+                        assert_eq!(
+                            icon_alpha(&rgba, SIZE, x, y),
+                            0,
+                            "margin pixel ({x},{y}) must be transparent"
+                        );
+                    }
+                }
+            }
+            // The artwork reaches its box: the first row inside the margin
+            // is opaque at the horizontal centre, so the inset trimmed the
+            // canvas rather than scaling the mark down and leaving a gap.
+            assert_eq!(
+                icon_alpha(&rgba, SIZE, SIZE / 2, TRAY_ICON_INSET),
+                255,
+                "the mark must touch the inside edge of its margin"
+            );
+            assert_eq!(
+                icon_alpha(&rgba, SIZE, SIZE / 2, SIZE / 2),
+                255,
+                "the centre of the mark is opaque"
+            );
+        }
+    }
+
+    #[test]
+    fn tray_icon_geometry_is_unchanged_where_no_margin_is_asked_for() {
+        // The zero-inset mapping must stay bit-identical to the historical
+        // `(device + subpixel) * 32 / size`, so introducing the parameter
+        // cannot move a Windows or macOS pixel. On Linux the same identity
+        // is asserted against that platform's own inset.
+        const SIZE: usize = 32;
+        const SAMPLES: usize = 4;
+        let artwork = (SIZE - 2 * TRAY_ICON_INSET) as f64;
+        for device in [0usize, 7, 16, SIZE - 1] {
+            for subpixel in 0..SAMPLES {
+                let expected = ((device as f64 + (subpixel as f64 + 0.5) / SAMPLES as f64)
+                    - TRAY_ICON_INSET as f64)
+                    * 32.0
+                    / artwork;
+                assert_eq!(
+                    icon_design_coord(device, subpixel, SAMPLES, SIZE, TRAY_ICON_INSET),
+                    expected
+                );
+            }
+        }
+        // And the margin genuinely lands outside the 32-unit design space,
+        // which is what makes those samples transparent without a special
+        // case in either rasterizer.
+        if TRAY_ICON_INSET > 0 {
+            assert!(icon_design_coord(0, 0, SAMPLES, SIZE, TRAY_ICON_INSET) < 0.0);
+            assert!(
+                icon_design_coord(SIZE - 1, SAMPLES - 1, SAMPLES, SIZE, TRAY_ICON_INSET) > 32.0
+            );
+        }
+    }
 
     #[test]
     fn foreground_disable_flushes_forwarder_before_sending_forget() {
@@ -5114,7 +5239,12 @@ mod tests {
 
     #[test]
     fn tray_icon_matches_site_favicon_shape_and_colors() {
-        let rgba = favicon_rgba(32);
+        // Rendered at zero inset explicitly, not through the platform
+        // constant: the `.ico` is the Windows shell artifact, so the parity
+        // it pins is with the Windows rendering — and asserting it that way
+        // keeps the check meaningful on a Linux build too, where the
+        // runtime mark carries a panel margin the asset must not grow.
+        let rgba = favicon_rgba_inset(32, 0);
 
         assert_eq!(rgba.len(), 32 * 32 * 4);
         assert_eq!(pixel(&rgba, 16, 16), [242, 163, 60, 255]);
