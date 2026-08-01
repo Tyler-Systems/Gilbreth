@@ -5,18 +5,33 @@
 //! `_NET_ACTIVE_WINDOW` read and its property reads, and a failed reply is
 //! a blackout (`None`), never an error that stops the pump.
 
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 
 use x11rb::{
     atom_manager,
+    connection::Connection,
     protocol::{
         screensaver::ConnectionExt as ScreenSaverConnectionExt,
+        xinput::{
+            ConnectionExt as XInputConnectionExt, DeviceId, EventMask as XIDeviceEventMask,
+            ValuatorMode, XIEventMask,
+        },
         xproto::{AtomEnum, ChangeWindowAttributesAux, ConnectionExt, EventMask, Window},
     },
     rust_connection::RustConnection,
 };
 
-use crate::foreground::ActiveWindow;
+use crate::{foreground::ActiveWindow, keyboard::Keymap};
+
+/// XI2's device-id wildcards. Raw input selects on `XIAllMasterDevices`:
+/// the server generates each raw event twice — once for the slave device
+/// and once for its attached master — so the all-devices wildcard receives
+/// every keystroke and click twice (observed live on this X server, 5
+/// synthetic presses arriving as 10 rows). The master wildcard matches
+/// exactly one copy per event; `sourceid` still names the generating slave
+/// for the absolute-device filter. Device queries use `XIAllDevices`.
+const XI_ALL_DEVICES: DeviceId = 0;
+const XI_ALL_MASTER_DEVICES: DeviceId = 1;
 
 atom_manager! {
     /// The interned EWMH atoms the pump reads. `WM_NAME`/`WM_CLASS` are
@@ -44,6 +59,58 @@ pub(crate) fn select_root_property_events(
     .map_err(|error| format!("root event selection failed: {error}"))?
     .check()
     .map_err(|error| format!("root event selection refused: {error}"))
+}
+
+/// Negotiate XI 2.2 and select the raw input streams on the root window:
+/// key press/release, button press/release, and motion, for every device.
+pub(crate) fn select_raw_input_events(conn: &RustConnection, root: Window) -> Result<(), String> {
+    conn.xinput_xi_query_version(2, 2)
+        .map_err(|error| format!("XI2 version request failed: {error}"))?
+        .reply()
+        .map_err(|error| format!("XI2 is unavailable on this server: {error}"))?;
+    conn.xinput_xi_select_events(
+        root,
+        &[XIDeviceEventMask {
+            deviceid: XI_ALL_MASTER_DEVICES,
+            mask: vec![
+                XIEventMask::RAW_KEY_PRESS
+                    | XIEventMask::RAW_KEY_RELEASE
+                    | XIEventMask::RAW_BUTTON_PRESS
+                    | XIEventMask::RAW_BUTTON_RELEASE
+                    | XIEventMask::RAW_MOTION,
+            ],
+        }],
+    )
+    .map_err(|error| format!("raw input selection failed: {error}"))?
+    .check()
+    .map_err(|error| format!("raw input selection refused: {error}"))
+}
+
+/// The slave devices whose x/y axes report absolute positions (touch
+/// screens, tablets): their raw-motion valuators are positions, not
+/// deltas, so the pump excludes them from motion accumulation rather than
+/// fabricating huge movements. Best-effort — an unreadable device list
+/// means an empty set, and the io refreshes it on hierarchy changes.
+pub(crate) fn absolute_pointer_sources(conn: &RustConnection) -> HashSet<DeviceId> {
+    let mut absolute = HashSet::new();
+    let reply = match conn.xinput_xi_query_device(XI_ALL_DEVICES) {
+        Ok(cookie) => match cookie.reply() {
+            Ok(reply) => reply,
+            Err(_) => return absolute,
+        },
+        Err(_) => return absolute,
+    };
+    for info in reply.infos {
+        let axis0_absolute = info.classes.iter().any(|class| {
+            class.data.as_valuator().is_some_and(|valuator| {
+                valuator.number == 0 && valuator.mode == ValuatorMode::ABSOLUTE
+            })
+        });
+        if axis0_absolute {
+            absolute.insert(info.deviceid);
+        }
+    }
+    absolute
 }
 
 /// Reads over the shared connection, cloneable so each monitor's provider
@@ -95,6 +162,31 @@ impl XReader {
             .reply()
             .ok()?;
         Some(u64::from(reply.ms_since_user_input))
+    }
+
+    /// The pointer's root-space position, sampled once per pass that
+    /// carries raw input (raw events carry no position of their own).
+    pub(crate) fn pointer_position(&self) -> Option<(i32, i32)> {
+        let reply = self.conn.query_pointer(self.root).ok()?.reply().ok()?;
+        Some((i32::from(reply.root_x), i32::from(reply.root_y)))
+    }
+
+    /// The current keycode-to-keysym table, rebuilt on `MappingNotify`.
+    pub(crate) fn keymap(&self) -> Option<Keymap> {
+        let setup = self.conn.setup();
+        let min = setup.min_keycode;
+        let max = setup.max_keycode;
+        let mapping = self
+            .conn
+            .get_keyboard_mapping(min, max - min + 1)
+            .ok()?
+            .reply()
+            .ok()?;
+        Some(Keymap::new(
+            min,
+            mapping.keysyms_per_keycode,
+            mapping.keysyms,
+        ))
     }
 
     fn window_u32(&self, window: Window, property: impl Into<u32>, type_: AtomEnum) -> Option<u32> {

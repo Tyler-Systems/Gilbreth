@@ -17,6 +17,8 @@
 mod foreground;
 mod hotkey;
 mod idle;
+mod keyboard;
+mod mouse;
 mod xserver;
 
 pub use hotkey::{
@@ -201,13 +203,25 @@ fn wait_for_activity(x_fd: RawFd, wake_fd: RawFd) {
     }
 }
 
+/// One raw input event translated by the io seam; position and window
+/// attribution are joined by the pump loop.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum RawInput {
+    Key(keyboard::RawKeyEvent),
+    Mouse(mouse::RawMouseKind),
+}
+
 /// One pass's translated X-event yield, produced by the io seam.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct PumpSignals {
     /// A root `PropertyNotify` named `_NET_ACTIVE_WINDOW` this pass.
     focus_dirty: bool,
+    /// A `MappingNotify` arrived: the keymap must be rebuilt.
+    keymap_dirty: bool,
     /// The X connection died; the pump must exit rather than spin.
     connection_lost: bool,
+    /// Raw input in arrival order.
+    raw_inputs: Vec<RawInput>,
 }
 
 /// The pump's io seam: the production implementation is the X connection
@@ -226,6 +240,118 @@ struct XIo {
     conn: Arc<RustConnection>,
     atoms: xserver::Atoms,
     wake_read: OwnedFd,
+    /// Slave devices whose x/y valuators are absolute positions (touch
+    /// screens): excluded from motion deltas, refreshed on hierarchy
+    /// changes.
+    absolute_sources: std::collections::HashSet<u16>,
+}
+
+/// A raw pointer axis value: `Fp3232` fixed point (integral + frac/2^32).
+fn fp3232(value: x11rb::protocol::xinput::Fp3232) -> f64 {
+    f64::from(value.integral) + f64::from(value.frac) / 4_294_967_296.0
+}
+
+/// Pull one axis's value out of a raw event's packed valuators.
+fn axis_value(mask: &[u32], values: &[x11rb::protocol::xinput::Fp3232], axis: u32) -> Option<f64> {
+    let word = (axis / 32) as usize;
+    let bit = axis % 32;
+    if mask.get(word).is_none_or(|w| w & (1 << bit) == 0) {
+        return None;
+    }
+    let mut index = 0usize;
+    for earlier in 0..axis {
+        let word = (earlier / 32) as usize;
+        let bit = earlier % 32;
+        if mask.get(word).is_some_and(|w| w & (1 << bit) != 0) {
+            index += 1;
+        }
+    }
+    values.get(index).copied().map(fp3232)
+}
+
+/// X wheel buttons are discrete ticks: 4/5 vertical (up positive, the
+/// Windows sign), 6/7 horizontal (right positive).
+fn wheel_for_button(button: u32) -> Option<mouse::RawMouseKind> {
+    let (axis, ticks) = match button {
+        4 => (gilbreth_core::MouseWheelAxis::Vertical, 1),
+        5 => (gilbreth_core::MouseWheelAxis::Vertical, -1),
+        6 => (gilbreth_core::MouseWheelAxis::Horizontal, -1),
+        7 => (gilbreth_core::MouseWheelAxis::Horizontal, 1),
+        _ => return None,
+    };
+    Some(mouse::RawMouseKind::Wheel { axis, ticks })
+}
+
+fn button_for_detail(detail: u32) -> Option<gilbreth_core::MouseButton> {
+    Some(match detail {
+        1 => gilbreth_core::MouseButton::Left,
+        2 => gilbreth_core::MouseButton::Middle,
+        3 => gilbreth_core::MouseButton::Right,
+        8 => gilbreth_core::MouseButton::X1,
+        9 => gilbreth_core::MouseButton::X2,
+        _ => return None,
+    })
+}
+
+fn raw_key(event: &x11rb::protocol::xinput::RawKeyPressEvent, press: bool) -> RawInput {
+    RawInput::Key(keyboard::RawKeyEvent {
+        keycode: event.detail as u8,
+        press,
+        flagged_repeat: u32::from(event.flags)
+            & u32::from(x11rb::protocol::xinput::KeyEventFlags::KEY_REPEAT)
+            != 0,
+        time: event.time,
+    })
+}
+
+impl XIo {
+    fn translate(&mut self, event: Event, signals: &mut PumpSignals) {
+        match event {
+            Event::PropertyNotify(notify) if notify.atom == self.atoms._NET_ACTIVE_WINDOW => {
+                signals.focus_dirty = true;
+            }
+            Event::MappingNotify(_) => signals.keymap_dirty = true,
+            Event::XinputRawKeyPress(event) => signals.raw_inputs.push(raw_key(&event, true)),
+            Event::XinputRawKeyRelease(event) => signals.raw_inputs.push(raw_key(&event, false)),
+            Event::XinputRawButtonPress(event) => {
+                if let Some(wheel) = wheel_for_button(event.detail) {
+                    signals.raw_inputs.push(RawInput::Mouse(wheel));
+                } else if let Some(button) = button_for_detail(event.detail) {
+                    signals
+                        .raw_inputs
+                        .push(RawInput::Mouse(mouse::RawMouseKind::Down(button)));
+                }
+            }
+            Event::XinputRawButtonRelease(event) => {
+                // Wheel ticks are press-only; 4-7 releases carry nothing.
+                if wheel_for_button(event.detail).is_none() {
+                    if let Some(button) = button_for_detail(event.detail) {
+                        signals
+                            .raw_inputs
+                            .push(RawInput::Mouse(mouse::RawMouseKind::Up(button)));
+                    }
+                }
+            }
+            Event::XinputRawMotion(event) => {
+                if self.absolute_sources.contains(&event.sourceid) {
+                    return;
+                }
+                let dx = axis_value(&event.valuator_mask, &event.axisvalues, 0).unwrap_or(0.0);
+                let dy = axis_value(&event.valuator_mask, &event.axisvalues, 1).unwrap_or(0.0);
+                let dx = dx.round() as i32;
+                let dy = dy.round() as i32;
+                if dx != 0 || dy != 0 {
+                    signals
+                        .raw_inputs
+                        .push(RawInput::Mouse(mouse::RawMouseKind::Moved { dx, dy }));
+                }
+            }
+            Event::XinputHierarchy(_) | Event::XinputDeviceChanged(_) => {
+                self.absolute_sources = xserver::absolute_pointer_sources(&self.conn);
+            }
+            _ => {}
+        }
+    }
 }
 
 impl PumpIo for XIo {
@@ -233,12 +359,7 @@ impl PumpIo for XIo {
         let mut signals = PumpSignals::default();
         loop {
             match self.conn.poll_for_event() {
-                Ok(Some(Event::PropertyNotify(notify)))
-                    if notify.atom == self.atoms._NET_ACTIVE_WINDOW =>
-                {
-                    signals.focus_dirty = true;
-                }
-                Ok(Some(_)) => {}
+                Ok(Some(event)) => self.translate(event, &mut signals),
                 Ok(None) => break,
                 Err(error) => {
                     warn!(%error, "X connection failed; capture pump exiting");
@@ -266,9 +387,13 @@ impl PumpIo for XIo {
 /// The pump's capture providers, injected so tests drive scripted state
 /// through the real pump loop without an X server (the macOS `Sources`
 /// pattern).
-struct Sources<AW, ID> {
+struct Sources<AW, ID, KM, PP> {
     active_window: AW,
     idle: ID,
+    /// The keymap read, called at start and on `keymap_dirty`.
+    keymap: KM,
+    /// The per-pass pointer-position sample (raw events carry none).
+    pointer_position: PP,
 }
 
 /// Run the capture pump on the current thread until the stop token cancels
@@ -297,6 +422,9 @@ where
         .map_err(|error| CaptureError::Source(format!("atom interning failed: {error}").into()))?;
     xserver::select_root_property_events(&conn, root)
         .map_err(|error| CaptureError::Source(error.into()))?;
+    xserver::select_raw_input_events(&conn, root)
+        .map_err(|error| CaptureError::Source(error.into()))?;
+    let absolute_sources = xserver::absolute_pointer_sources(&conn);
 
     let (wake_read, wake_write) = wake_pipe()?;
     let stop_requested = Arc::new(AtomicBool::new(false));
@@ -316,11 +444,13 @@ where
 
     info!(
         "Linux capture pump running: X11 connection + self-pipe waker + \
-         EWMH foreground and X idle clock streams"
+         EWMH foreground, X idle clock, and XI2 raw keyboard/mouse streams"
     );
 
     let reader = xserver::XReader::new(Arc::clone(&conn), root, atoms);
     let idle_reader = reader.clone();
+    let keymap_reader = reader.clone();
+    let pointer_reader = reader.clone();
     run_pump_loop(
         tx,
         stop,
@@ -331,31 +461,39 @@ where
             conn,
             atoms,
             wake_read,
+            absolute_sources,
         },
         Sources {
             active_window: move || reader.active_window(),
             idle: move || idle_reader.idle_ms(),
+            keymap: move || keymap_reader.keymap(),
+            pointer_position: move || pointer_reader.pointer_position(),
         },
     )
 }
 
-fn run_pump_loop<F, IO, AW, ID>(
+fn run_pump_loop<F, IO, AW, ID, KM, PP>(
     tx: Sender<Captured>,
     stop: StopToken,
     stop_requested: Arc<AtomicBool>,
     controls: CaptureControls,
     mut after_service: F,
     mut io: IO,
-    sources: Sources<AW, ID>,
+    mut sources: Sources<AW, ID, KM, PP>,
 ) -> Result<(), CaptureError>
 where
     F: FnMut(),
     IO: PumpIo,
     AW: FnMut() -> Option<foreground::ActiveWindow>,
     ID: FnMut() -> Option<u64>,
+    KM: FnMut() -> Option<keyboard::Keymap>,
+    PP: FnMut() -> Option<(i32, i32)>,
 {
     let mut foreground_monitor = foreground::ForegroundMonitor::new(sources.active_window);
     let mut idle_monitor = idle::IdleMonitor::new(controls.idle_threshold(), sources.idle);
+    let mut keyboard_state = keyboard::KeyboardState::new();
+    let mut mouse_state = mouse::MouseState::new();
+    let mut keymap: Option<keyboard::Keymap> = None;
     let mut pending_events = Vec::new();
     let mut last_noted_pid: Option<u32> = None;
 
@@ -363,7 +501,7 @@ where
         if stop.is_cancelled() || stop_requested.load(Ordering::SeqCst) {
             break Ok(());
         }
-        let signals = io.drain();
+        let mut signals = io.drain();
         if signals.connection_lost {
             break Err(CaptureError::Source("X connection lost".into()));
         }
@@ -391,6 +529,53 @@ where
             }
         }
         idle_monitor.poll(now, settings.idle && !suspended, &mut pending_events);
+
+        // Keyboard + mouse: raw input drained this pass runs through the
+        // derivation state machines, attributed to the active window just
+        // polled (Windows parity; ~one service tick of skew is within the
+        // pump's granularity). The machines advance regardless of stream
+        // toggles; rows gate at `send`.
+        if keymap.is_none() || signals.keymap_dirty {
+            keymap = (sources.keymap)();
+        }
+        let input_window = foreground_monitor.current_window();
+        // One position sample serves the whole pass's pointer events (raw
+        // events carry no coordinates; sub-tick moves share a position).
+        let pass_position = if signals
+            .raw_inputs
+            .iter()
+            .any(|input| matches!(input, RawInput::Mouse(_)))
+        {
+            (sources.pointer_position)()
+        } else {
+            None
+        };
+        for raw in signals.raw_inputs.drain(..) {
+            match raw {
+                RawInput::Key(event) => {
+                    if let Some(keymap) = keymap.as_ref() {
+                        pending_events.extend(keyboard_state.on_event(
+                            event,
+                            keymap,
+                            input_window.clone(),
+                            now,
+                        ));
+                    }
+                }
+                RawInput::Mouse(kind) => {
+                    mouse_state.on_event(
+                        mouse::RawMouseEvent {
+                            kind,
+                            pos: pass_position,
+                        },
+                        input_window.clone(),
+                        now,
+                        &mut pending_events,
+                    );
+                }
+            }
+        }
+        mouse_state.flush_due(now, &mut pending_events);
 
         for captured in pending_events.drain(..) {
             send_captured(&tx, &controls, captured);
@@ -508,30 +693,40 @@ mod tests {
         stop_pump();
     }
 
-    /// A scripted io seam: pass 1 reports the focus-dirty edge, and the
-    /// stop token cancels after a fixed pass count — the whole loop runs
+    /// A scripted io seam: each pass pops the next scripted yield, and an
+    /// exhausted script cancels the stop token — the whole loop runs
     /// without an X server.
     struct ScriptedIo {
-        passes: u32,
-        dirty_on_pass: u32,
-        stop_after: u32,
+        script: std::collections::VecDeque<PumpSignals>,
         stop: StopToken,
     }
 
     impl PumpIo for ScriptedIo {
         fn drain(&mut self) -> PumpSignals {
-            self.passes += 1;
-            let mut signals = PumpSignals::default();
-            if self.passes == self.dirty_on_pass {
-                signals.focus_dirty = true;
+            match self.script.pop_front() {
+                Some(signals) => signals,
+                None => {
+                    self.stop.cancel();
+                    PumpSignals::default()
+                }
             }
-            if self.passes >= self.stop_after {
-                self.stop.cancel();
-            }
-            signals
         }
 
         fn wait(&mut self) {}
+    }
+
+    fn scripted_window() -> Option<foreground::ActiveWindow> {
+        Some(foreground::ActiveWindow {
+            xid: 42,
+            pid: 4242,
+            exe: "/usr/bin/editor".to_string(),
+            title: "notes".to_string(),
+        })
+    }
+
+    /// Keycode 8 = 'p' in the scripted keymap.
+    fn scripted_keymap() -> Option<keyboard::Keymap> {
+        Some(keyboard::Keymap::new(8, 1, vec![0x70]))
     }
 
     #[test]
@@ -540,9 +735,13 @@ mod tests {
         let stop = StopToken::new();
         let controls = CaptureControls::all_enabled();
         let io = ScriptedIo {
-            passes: 0,
-            dirty_on_pass: 1,
-            stop_after: 3,
+            script: std::collections::VecDeque::from([
+                PumpSignals {
+                    focus_dirty: true,
+                    ..Default::default()
+                },
+                PumpSignals::default(),
+            ]),
             stop: stop.clone(),
         };
         run_pump_loop(
@@ -553,15 +752,10 @@ mod tests {
             || {},
             io,
             Sources {
-                active_window: || {
-                    Some(foreground::ActiveWindow {
-                        xid: 42,
-                        pid: 4242,
-                        exe: "/usr/bin/editor".to_string(),
-                        title: "notes".to_string(),
-                    })
-                },
+                active_window: scripted_window,
                 idle: || Some(0),
+                keymap: scripted_keymap,
+                pointer_position: || Some((10, 20)),
             },
         )
         .expect("scripted pump exits cleanly");
@@ -579,5 +773,80 @@ mod tests {
             controls.foreground_exe_seen("editor"),
             "the churn-filter focus rescue noted the active exe"
         );
+    }
+
+    #[test]
+    fn scripted_raw_input_becomes_attributed_key_and_mouse_rows() {
+        let (tx, rx) = bounded(32);
+        let stop = StopToken::new();
+        let controls = CaptureControls::all_enabled();
+        let io = ScriptedIo {
+            script: std::collections::VecDeque::from([PumpSignals {
+                focus_dirty: true,
+                raw_inputs: vec![
+                    RawInput::Key(keyboard::RawKeyEvent {
+                        keycode: 8,
+                        press: true,
+                        flagged_repeat: false,
+                        time: 100,
+                    }),
+                    RawInput::Mouse(mouse::RawMouseKind::Down(gilbreth_core::MouseButton::Left)),
+                    RawInput::Mouse(mouse::RawMouseKind::Up(gilbreth_core::MouseButton::Left)),
+                    RawInput::Mouse(mouse::RawMouseKind::Wheel {
+                        axis: gilbreth_core::MouseWheelAxis::Vertical,
+                        ticks: 1,
+                    }),
+                ],
+                ..Default::default()
+            }]),
+            stop: stop.clone(),
+        };
+        run_pump_loop(
+            tx,
+            stop,
+            Arc::new(AtomicBool::new(false)),
+            controls,
+            || {},
+            io,
+            Sources {
+                active_window: scripted_window,
+                idle: || Some(0),
+                keymap: scripted_keymap,
+                pointer_position: || Some((10, 20)),
+            },
+        )
+        .expect("scripted pump exits cleanly");
+
+        let mut rows = Vec::new();
+        while let Ok(captured) = rx.try_recv() {
+            rows.push(captured);
+        }
+        let kinds: Vec<&str> = rows.iter().map(|row| row.payload.kind()).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                "focus_changed",
+                "key",
+                "mouse_click",
+                "mouse_wheel",
+                "focus_changed"
+            ]
+        );
+        match &rows[1].payload {
+            gilbreth_core::EventPayload::Key { key, window, .. } => {
+                assert_eq!(key, "P");
+                let window = window.as_ref().expect("attributed to the active window");
+                assert_eq!(window.hwnd, 42);
+                assert_eq!(window.title, "notes");
+            }
+            other => panic!("expected key, got {other:?}"),
+        }
+        match &rows[2].payload {
+            gilbreth_core::EventPayload::MouseClick { x, y, window, .. } => {
+                assert_eq!((*x, *y), (Some(10), Some(20)), "per-pass position sample");
+                assert_eq!(window.as_ref().expect("attributed").hwnd, 42);
+            }
+            other => panic!("expected click, got {other:?}"),
+        }
     }
 }
