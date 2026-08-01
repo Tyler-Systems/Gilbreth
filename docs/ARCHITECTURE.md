@@ -61,6 +61,7 @@ verifier-host operational tooling under `scripts/`:
 | `gilbreth-core` | The `Captured`/`Event` envelope types, the `EventSource` trait, the **sequencer**, the privacy `Policy`/filter, pipeline glue. **Platform-agnostic, no Win32.** | — |
 | `gilbreth-capture-windows` | Win32 implementations of `EventSource` (foreground, window, keyboard, mouse, system). | `gilbreth-core`, `windows` |
 | `gilbreth-capture-macos` | Implemented macOS ambient-capture backend from MAC-1; its deliberate capability differences are recorded in the capability matrix. | `gilbreth-core` |
+| `gilbreth-capture-linux` | Implemented Linux X11 ambient-capture backend from LIN-1 (the dogfood tier); its deliberate capability differences are recorded in the capability matrix. | `gilbreth-core`, `x11rb` |
 | `gilbreth-store` | `rusqlite` connection, migrations, the batched single-writer. | `gilbreth-core`, `rusqlite` |
 | `gilbreth-read` | Native read-time analytics and replay-export construction over the SQLite contract. Read-only; no store ownership or UI. | `rusqlite`, `chrono` |
 | `gilbreth-dashboard` | Native egui shell, charts, seven product surfaces, and background read/action worker. | `gilbreth-read`, `eframe` |
@@ -497,8 +498,8 @@ port, or address is part of the product path.
   error. Acquiring local but colliding on global means the same user already
   has Gilbreth in another logon session, so the autostart-shaped second launch
   logs and exits quietly. The `--dashboard` role bypasses the capture guard,
-  so multiple read-only viewers remain supported. On macOS the per-user
-  data-root `flock` already spans that user's login sessions.
+  so multiple read-only viewers remain supported. On macOS and Linux the
+  per-user data-root `flock` already spans that user's login sessions.
 - **Config:** `%LOCALAPPDATA%\Gilbreth\config.toml` is deserialized into typed
   `serde` structs with defaults and no parse-path `unwrap`. Missing config
   creates typed defaults; malformed config is logged and left untouched.
@@ -554,6 +555,8 @@ The notable architectural choices are:
 |---|---|
 | `windows` | Official Win32/WinRT bindings for the Windows backend; features stay scoped by crate. |
 | `objc2-*` | Public Apple framework bindings for the macOS backend; no private APIs. |
+| `x11rb` | Pure-Rust X protocol implementation for the Linux backend (no libX11/libxcb linkage); extension features stay scoped by crate. |
+| `ksni` | StatusNotifierItem/dbusmenu tray for the Linux backend, consumed through its blocking API; keeps GTK/libappindicator out of the build and tokio out of the tree. |
 | `rusqlite` + `rusqlite_migration` | Bundled SQLite and `user_version` migrations; the bundled feature requires a native C toolchain. |
 | `crossbeam-channel` | Bounded channels and explicit shutdown for the synchronous single-writer design. |
 | `eframe` / `egui` / `egui_kittest` | Exact-pinned UI stack; upgrades are deliberate work with snapshot coverage. |
@@ -575,8 +578,9 @@ order:
 
 1. `gilbreth-core`: event envelope, sequencer, privacy policy, and shared
    platform-neutral contracts.
-2. `gilbreth-capture-windows` and `gilbreth-capture-macos`: platform capture
-   backends against the core contract.
+2. `gilbreth-capture-windows`, `gilbreth-capture-macos`, and
+   `gilbreth-capture-linux`: platform capture backends against the core
+   contract.
 3. `gilbreth-store`: migrations, single-writer persistence, retention,
    delete/scrub, archive/reset, and WAL behavior.
 4. `gilbreth-read`: read-only analytics, session/event-list queries, and

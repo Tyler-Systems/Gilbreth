@@ -11,7 +11,7 @@ each decision. Do not reconstruct current intent from closed review packets.
 | Repository | Public, and starting from a single import commit. Development history before that import is kept in a private archive. |
 | Windows x64 | Shipped. `v0.1.2` is published, signed through Azure Artifact Signing, and built from this source root. The builder, disposable-clone package proof, clean-machine marker smoke, and all four uninstall lanes are complete. |
 | macOS arm64 | Application capture and dogfood are complete. Public packaging is blocked on the macOS distribution work. |
-| Linux | LIN-0: the dashboard viewer builds and runs from source, and ambient capture declines with a pointer to `--dashboard`. Portable crates and CI hygiene otherwise; there is no Linux application release lane. |
+| Linux | LIN-1: ambient X11 capture (the dogfood tier) and the dashboard build and run from source, with the StatusNotifier tray, XGrabKey pause hotkey, and XDG autostart. Dialogs remain fail-safe stubs, so the confirm-gated tray privacy actions decline (a recorded gap). Wayland is absent by design; there is no Linux application release lane. |
 
 The immediate critical path is:
 

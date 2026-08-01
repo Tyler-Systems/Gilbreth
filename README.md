@@ -45,7 +45,8 @@ run Setup. Windows SmartScreen may warn while the signing certificate is new.
 Not on Windows? macOS capture works in development builds with no packaged
 release yet, and developers can
 [build from source](#getting-started-developers) on Windows, macOS, or
-Linux — on Linux that builds the dashboard viewer (LIN-0), not capture. The website is
+Linux — on Linux that builds X11 ambient capture and the dashboard (LIN-1,
+a dogfood tier with no packaged release). The website is
 **[gilbreth.tylersystems.com](https://gilbreth.tylersystems.com/)**.
 
 <p align="center">
@@ -99,7 +100,7 @@ easier for the next person to find.
 |---|---|---|
 | Windows x64 | Supported. [`v0.1.2`](https://github.com/Tyler-Systems/Gilbreth/releases/tag/v0.1.2) is published, signed, and built from this source root. | None open. Later versions follow the [release process](docs/RELEASE_PROCESS.md). |
 | macOS arm64 | Ambient capture and dogfood work; no packaged release. | The macOS distribution work, before any macOS package ships. |
-| Linux | The dashboard viewer builds and runs from source (LIN-0); ambient capture declines. | LIN-1, ambient X11 capture (see the roadmap). No Linux product release is planned. |
+| Linux | Ambient X11 capture and the dashboard build and run from source (LIN-1, the dogfood tier); the [capability matrix](docs/CAPABILITY_MATRIX.md) carries the Linux column. | LIN-2, the parity remainder (see the roadmap). No Linux product release is planned. |
 | Contributions | Open. Issues need nothing; code needs a signed [contributor licence agreement](CONTRIBUTOR_AGREEMENT.md). | None open. |
 
 Maintainers and contributors: start with the
@@ -225,7 +226,7 @@ Gilbreth/
 - **M5b — Record Routine** — opt-in semantic action capture, dashboard review, replay-readiness verdicts, local value-free export (Agent handoff trace • Native automation blueprint), and the local `runas` elevated-capture lane are shipped/closed. Signed UIAccess public distribution and the listed future branches remain deferred.
 - **M6 — ML & beyond** — ML-driven recommendations and later platform expansion, including the macOS distribution work that a public macOS package waits on.
 - **LIN-0 — Linux viewer**: landed on 2026-08-01. The read-only `gilbreth-app --dashboard` builds and runs from source on X11, and the capture process declines with a pointer to the dashboard.
-- **LIN-1 — Linux ambient capture**: the dogfood tier, X11 only. A `gilbreth-capture-linux` backend for the permission-free streams that feed Today, Week, Analytics, and Input Exposure: focus segments with titles (EWMH), idle/active (the X server idle clock), keyboard and mouse rows (XInput2 raw events), display shape, and the process sweep (procfs through the shared core tracker), plus the tray, the pause hotkey, and login autostart in the shell. Landing it adds the Linux column to the capability matrix.
+- **LIN-1 — Linux ambient capture**: landed on 2026-08-01, the dogfood tier, X11 only. The `gilbreth-capture-linux` backend carries the permission-free streams that feed Today, Week, Analytics, and Input Exposure: focus segments with titles (EWMH), idle/active (the X server idle clock), keyboard and mouse rows (XInput2 raw events), display shape, and the process sweep (procfs through the shared core tracker), plus the StatusNotifier tray, the XGrabKey pause hotkey, and XDG autostart in the shell. The capability matrix carries the Linux column.
 - **LIN-2 — Linux parity remainder**: the streams X11 and D-Bus can carry honestly: window lifecycle from the client list, session lock/unlock and power boundaries from elogind, and clipboard metadata from XFixes selection events, with a recorded fail-closed sensitive-context posture. Record Routine and the encrypted archive stay absent by decision record, Wayland stays absent by design, and no packaged Linux release is planned.
 
 **Completed:** **R0 "usable by a stranger" on 2026-07-04**, and **R1's first packaged Windows build on 2026-07-18**. Both happened in the private repository, and that package is not republished here. Discovery and macOS packaging come next. The friction-discovery triad already ships from captured data: **repetition** (routine motifs, cross-app copy hand-offs), **fragmentation** (focus metrics, resumption lag), and **fatigue** (Input Exposure).
@@ -254,9 +255,10 @@ python scripts/review_run.py
 
 Verify either supported developer install with `.\scripts\verify_build_install.ps1`. The separate signed elevated-helper distribution lane remains deferred in the roadmap.
 
-On Linux, `cargo run -p gilbreth-app -- --dashboard` opens the same viewer
-against the local data root (LIN-0). The capture process declines, because
-ambient capture has no Linux backend.
+On Linux (X11), `cargo run -p gilbreth-app` starts ambient capture with the
+tray and pause hotkey (LIN-1, the dogfood tier), and the same
+`-- --dashboard` flag opens the dashboard against the local data root. A
+Wayland session declines capture by design.
 
 Releases follow the lightweight **[release process](docs/RELEASE_PROCESS.md)**.
 Each one is pinned by its own annotated tag, release manifest, and checksums.
