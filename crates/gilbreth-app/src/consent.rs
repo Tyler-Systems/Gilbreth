@@ -28,6 +28,20 @@ pub fn run_first_run_consent(config_path: &Path, config: &mut AppConfig) {
     if config.privacy.posture_confirmed {
         return;
     }
+    // Linux has no password-field probe in this tier, so the opt-in this
+    // dialog offers has no protection behind it there and the surface is
+    // absent by decision (2026-08-01) — the Record Routine precedent:
+    // not built, rather than shown and unable to keep its promise. Lean
+    // capture is the only posture the UI can reach; `store_key_content` in
+    // config.toml is still honoured for deliberate development use, so the
+    // posture stays unconfirmed rather than being written closed.
+    if cfg!(target_os = "linux") {
+        info!(
+            "first-run capture posture dialog skipped: the key-content opt-in \
+             is absent on this platform, and capture runs lean"
+        );
+        return;
+    }
     info!("first-run capture posture unconfirmed; showing the consent dialog");
     let answer =
         platform::confirm_three_way(CONSENT_DIALOG_TITLE, CONSENT_DIALOG_BODY, AlertKind::Info);

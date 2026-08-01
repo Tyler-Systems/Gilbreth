@@ -11,6 +11,7 @@ pub mod charts;
 #[cfg(test)]
 mod copy_audit;
 pub mod data;
+pub mod dialog;
 mod first_launch;
 pub mod fonts;
 pub mod format;

@@ -36,12 +36,12 @@ the platform has no permission column.
 | Process launch/exit + churn summaries | ✅ Toolhelp sweep, 5 s | ✅ libproc sweep, 5 s, same tracker/filter (hoisted to core); a process denying every unprivileged read is absent (Windows always has a name) | none | ✅ procfs sweep, 5 s, same core tracker/filter; kernel threads excluded (Toolhelp/libproc parity); always has a name (`comm`) |
 | Clipboard rows (`clipboard_used`) | ✅ metadata incl. `text_char_count`/`byte_size` | ✅ **metadata-only, permanently**: kind/count from declared types; sizes always `None` (macOS 26 pasteboard privacy alert-gates data reads); additive `concealed` kind for password-manager copies (mac-only) | none | ❌ absent until LIN-2 (XFixes selection events) |
 | Notifications received (metadata) | ✅ WNS listener | ❌ **unsupported** — no public listener API; rows simply absent | — | ❌ **unsupported**: reading them means owning the notification-daemon role; rows simply absent |
-| Sensitive context: password fields | ✅ UIA probe (`password_field` reason) | ✅ AX secure-field probe, fail-closed, same reason — plus the stronger OS layer below. **Caveat:** apps that don't materialize an accessibility tree for passive readers (Chromium/Electron class) fail every probe; on sustained deterministic failure Gilbreth **announces itself to that app** (Electron's documented `AXManualAccessibility`; the one AX write in the product; the O3 pair, adopted 2026-07-14) and probes through its app element, after which typing clears; apps that still never answer stay **wholesale-redacted** (over-marking, never leaking) | Accessibility (probe only; keyboard never gates on it) | ❌ **absent, a recorded LIN-1 gap rather than a design cell**: no probe exists on X11 in this tier, so the keyboard privacy posture rests on the lean-capture default (key names omitted at the writer) plus the redaction rules. LIN-2's sensitive-context decision record owns the next step |
+| Sensitive context: password fields | ✅ UIA probe (`password_field` reason) | ✅ AX secure-field probe, fail-closed, same reason — plus the stronger OS layer below. **Caveat:** apps that don't materialize an accessibility tree for passive readers (Chromium/Electron class) fail every probe; on sustained deterministic failure Gilbreth **announces itself to that app** (Electron's documented `AXManualAccessibility`; the one AX write in the product; the O3 pair, adopted 2026-07-14) and probes through its app element, after which typing clears; apps that still never answer stay **wholesale-redacted** (over-marking, never leaking) | Accessibility (probe only; keyboard never gates on it) | ❌ **no probe exists on X11 in this tier**, so the key-content opt-in it would protect is **absent from the UI too** (owner decision 2026-08-01, the Record Routine shape: not built, rather than shown without the protection behind it). Capture is lean-only from every surface: key names are omitted at the writer, and the redaction rules still apply. `privacy.store_key_content` in config.toml is still honoured for deliberate development use. LIN-2's sensitive-context decision record owns the next step |
 | Sensitive context: OS-enforced secure input | — (no analog; `secure_desktop` reason is Windows-only) | ✅ `secure_input` reason (additive): macOS itself withholds keystrokes from taps during password entry — stronger than a probe | none | — (no analog; X11 delivers raw events regardless) |
 | Input-relay/KVM hint (`input_origin`) | ✅ pinned-center heuristic | ✅ CGEvent source state (more direct) | Input Monitoring (same tap) | ❌ absent — no detector; the field is never set |
 | Record Routine (semantic action capture) | ✅ | ❌ **Windows-only** — tray items, Recordings tab, and the Analytics request button are absent from the macOS build, not merely disabled (reopen by decision record only) | — | ❌ same absence as macOS, by the same decision record |
 | Launch at startup | ✅ HKCU Run key | ✅ SMAppService login item (`/Applications` bundle) | user approval in Login Items (system UI) | ✅ XDG autostart desktop entry |
-| Tray + dashboard + privacy actions (tray pause, erase, redaction) | ✅ | ✅ same working actions; NSAlert confirms; template menu-bar icon | none | ⚠️ tray (StatusNotifierItem), pause, stream toggles, key-content opt-in, and dashboard all work; **dialogs are fail-safe stubs**, so the confirm-gated tray actions (secure erase) decline rather than proceed unseen — a recorded LIN-1 gap; dashboard delete/prune still work |
+| Tray + dashboard + privacy actions (tray pause, erase, redaction) | ✅ | ✅ same working actions; NSAlert confirms; template menu-bar icon | none | ✅ same working actions, including confirm-gated secure erase; dialogs are the product's own egui shell hosted in a short-lived child process, since X11 has no `MessageBox`/`NSAlert` guaranteed present. A dialog that cannot be shown answers negative (a confirm) or defers (the three-way), so no destructive flow proceeds unseen. The key-content opt-in is the one absent item, per the password-field row |
 | Global pause/resume hotkey | ✅ configurable, default `Ctrl+Alt+Shift+P` | ✅ configurable, same default (Control-Option-Shift-P); registered through Carbon, so it needs no permission at all | Behaviour during macOS secure input is not characterised — see the note below | ✅ configurable, same default; XGrabKey with CapsLock/NumLock variants, contended chords decline like the twins |
 | Encrypted Archive and reset | ✅ DPAPI-wrapped `.gla` | ❌ **absent** — the tray item and the dashboard portable-export section are not built on macOS, rather than shown and failing. Reading and removing a `.gla` or legacy `.db` copied from a Windows install still works: Diagnostics counts them and Erase all my data removes them | — | ❌ **absent**: the same not-built-rather-than-failing shape as macOS, since DPAPI is Windows-only |
 
@@ -102,20 +102,20 @@ Beyond that:
    decision records that keep them off macOS, not by a Linux-specific
    limit. A `.gla` copied from a Windows install stays readable and
    removable.
-4. **No password-field suppression** — a recorded gap, not a design
-   cell. Key content is off by default (lean capture omits every key
-   name at the writer), and the redaction rules still apply; enabling
-   **Store typed key content** on Linux means passwords typed into
-   ordinary fields can reach the database, which is not true on the
-   other two platforms.
-5. **Dialogs are logged, not shown** — the confirm-gated tray privacy
-   actions decline rather than proceeding unseen. The dashboard's own
-   delete and prune paths are unaffected.
-6. **No input-relay hint and no absolute-device motion** — a KVM's
+4. **No password-field suppression, and therefore no key-content
+   opt-in.** X11 has no probe in this tier, so rather than offer a
+   setting whose protection does not exist here, the surface is absent:
+   the tray item and the first-run posture dialog are not built on
+   Linux (owner decision 2026-08-01). Capture is lean-only from every
+   surface, with key names omitted at the writer, and
+   `privacy.store_key_content` in config.toml is still honoured for
+   deliberate development use — the one way to reach the unprotected
+   posture.
+5. **No input-relay hint and no absolute-device motion** — a KVM's
    forwarded input is indistinguishable here, and a touchscreen's
    position-reporting motion is excluded rather than reported as huge
    deltas. Clicks from either still record.
-7. **Fixed click and drag metrics** — X11 exposes no system
+6. **Fixed click and drag metrics** — X11 exposes no system
    double-click interval or drag threshold, so the shared fallbacks
    (500 ms, 4 px, 8 px) stand in for the user's settings.
 
@@ -144,7 +144,10 @@ remains strictly the most private of the three on this axis.
 Concise status:
 
 > **Current through 2026-08-01:** LIN-1 landed on 2026-08-01 and this
-> column is its contract — every specified stream implemented and proven
+> column is its contract, with the same day's follow-up closing its two
+> privacy holes: secure erase now confirms through a real dialog instead
+> of declining unseen, and the key-content opt-in is absent rather than
+> unprotected — every specified stream implemented and proven
 > live on MX Linux/X11/Xfce (focus segments with titles and dwell,
 > idle/active edges, key and mouse rows through the ported state machines,
 > display shape, the procfs sweep with its churn summary, the tray pause

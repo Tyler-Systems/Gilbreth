@@ -19,8 +19,12 @@ mod autostart;
 mod config;
 mod consent;
 mod consent_copy;
+// The Linux modal-dialog wire contract; the renderer lives in the crate that
+// owns the egui shell.
 #[cfg(test)]
 mod copy_audit;
+#[cfg(target_os = "linux")]
+mod dialog_host;
 #[cfg(windows)]
 mod elevated_record_helper;
 mod health;
@@ -110,6 +114,12 @@ const PAUSE_CAPTURE_MENU_ID: &str = "pause_capture";
 /// Second-process flag: the tray spawns the same exe with this argument to
 /// open the egui dashboard (S4 process model — one binary, no socket).
 const DASHBOARD_PROCESS_FLAG: &str = "--dashboard";
+/// Third-process flag: Linux has no `MessageBox`/`NSAlert`, so the app hosts
+/// its own modal dialog in a short-lived child of this same executable (the
+/// `--dashboard` process model, reused). The request arrives on stdin rather
+/// than argv, which would publish the message through `/proc/<pid>/cmdline`.
+#[cfg(target_os = "linux")]
+const DIALOG_PROCESS_FLAG: &str = "--dialog";
 /// The scripted graceful stop: ask the running instance to exit through
 /// the WM_CLOSE quit path (same flush as tray Quit). Exit code 0 when the
 /// request was posted to a found window — the flush completes
@@ -134,6 +144,7 @@ const STOP_RECORDING_MENU_ID: &str = "stop_recording";
 const PAUSE_RECORDING_MENU_ID: &str = "pause_recording";
 #[cfg(windows)]
 const RESUME_RECORDING_MENU_ID: &str = "resume_recording";
+#[cfg(not(target_os = "linux"))]
 const STORE_KEY_CONTENT_MENU_ID: &str = "store_key_content";
 const NOTIFICATION_ACCESS_MENU_ID: &str = "notification_access";
 const LAUNCH_AT_STARTUP_MENU_ID: &str = "launch_at_startup";
@@ -175,6 +186,7 @@ const MENU_LABEL_IDLE: &str = "Idle";
 const MENU_LABEL_PAUSE_CAPTURE: &str = "Pause capture";
 const MENU_LABEL_RESUME_CAPTURE: &str = "Resume capture";
 const MENU_LABEL_PRIVACY: &str = "Privacy";
+#[cfg(not(target_os = "linux"))]
 const MENU_LABEL_STORE_KEY_CONTENT: &str = "Store typed key content";
 const MENU_LABEL_NOTIFICATION_ACCESS: &str = "Notification counts...";
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -230,9 +242,11 @@ const BODY_CONFIG_MALFORMED_PREFIX: &str =
      for now. Any custom privacy capture exclusions, redaction rules, or storage paths \
      in it are NOT active until it is fixed.\n\nYour file was left unchanged: correct \
      it and restart Gilbreth to restore your settings.\n\nDetail: ";
+#[cfg(not(target_os = "linux"))]
 const BODY_STORE_KEY_CONTENT_ON: &str =
     "Typed key content will be stored starting the next time Gilbreth runs. Until then \
      keystrokes stay counted without content.";
+#[cfg(not(target_os = "linux"))]
 const BODY_STORE_KEY_CONTENT_OFF: &str =
     "Key content storage is off. The change takes effect the next time Gilbreth runs; \
      rows captured before the restart keep their content unless you prune or erase them.";
@@ -459,6 +473,16 @@ fn main() -> Result<()> {
         }
         std::process::exit(1);
     }
+    // The dialog child renders one modal and exits with the answer as its
+    // status. It owns nothing — no store, no logging, no guards — so it
+    // routes before every one of them.
+    #[cfg(target_os = "linux")]
+    if arguments
+        .iter()
+        .any(|argument| argument.as_os_str() == DIALOG_PROCESS_FLAG)
+    {
+        std::process::exit(run_dialog_process());
+    }
     // The dashboard runs as a second process of this same exe (S4 process
     // model). It is not a capture owner, so route it before the capture-scoped
     // single-instance guard and before any capture threads start. Explicit
@@ -490,6 +514,30 @@ fn main() -> Result<()> {
             );
             Err(error)
         }
+    }
+}
+
+/// The `--dialog` child: read one request from stdin, render it, and exit
+/// with the answer as the status. Deliberately austere — no store, no log
+/// file, no guards — so a dialog can never be the thing that breaks capture.
+/// Any failure returns the dismissed status and lets the parent apply its
+/// own fail-safe.
+#[cfg(target_os = "linux")]
+fn run_dialog_process() -> i32 {
+    use std::io::Read;
+
+    let mut encoded = String::new();
+    if std::io::stdin().read_to_string(&mut encoded).is_err() {
+        return dialog_host::EXIT_DISMISSED;
+    }
+    let request = match serde_json::from_str::<dialog_host::DialogWireRequest>(&encoded) {
+        Ok(request) if request.version == dialog_host::DIALOG_WIRE_VERSION => request,
+        _ => return dialog_host::EXIT_DISMISSED,
+    };
+    let icon = Some((32, 32, favicon_rgba(32)));
+    match gilbreth_dashboard::dialog::run_dialog(request.into_render_request(icon)) {
+        Ok(answer) => dialog_host::status_for_answer(answer),
+        Err(_) => dialog_host::EXIT_DISMISSED,
     }
 }
 
@@ -1762,6 +1810,12 @@ struct Tray {
     _separator: PredefinedMenuItem,
     _open_dashboard: MenuItem,
     _privacy_menu: Submenu,
+    // Absent on Linux by decision (2026-08-01): the platform has no
+    // password-field probe in this tier, so the opt-in has no protection
+    // behind it. Gating the field, not just its enabled flag — the same
+    // shape Record Routine uses on macOS, and the reason is the same: a
+    // surface that cannot keep the promise its twin makes should not exist.
+    #[cfg(not(target_os = "linux"))]
     store_key_content: CheckMenuItem,
     // Appended on every platform so the tray anatomy stays identical; only
     // the Windows handler reads (and retitles) it today.
@@ -1950,6 +2004,7 @@ impl Tray {
             None,
         );
         let privacy_menu = Submenu::new(MENU_LABEL_PRIVACY, true);
+        #[cfg(not(target_os = "linux"))]
         let store_key_content = CheckMenuItem::with_id(
             MenuId::new(STORE_KEY_CONTENT_MENU_ID),
             MENU_LABEL_STORE_KEY_CONTENT,
@@ -1976,6 +2031,7 @@ impl Tray {
             true,
             None,
         );
+        #[cfg(not(target_os = "linux"))]
         privacy_menu.append(&store_key_content)?;
         privacy_menu.append(&notification_access)?;
         privacy_menu.append(&PredefinedMenuItem::separator())?;
@@ -2067,6 +2123,7 @@ impl Tray {
             _separator: separator,
             _open_dashboard: open_dashboard,
             _privacy_menu: privacy_menu,
+            #[cfg(not(target_os = "linux"))]
             store_key_content,
             notification_access,
             #[cfg(windows)]
@@ -2342,6 +2399,7 @@ impl Tray {
                 PAUSE_RECORDING_MENU_ID => self.pause_recording(),
                 #[cfg(windows)]
                 RESUME_RECORDING_MENU_ID => self.resume_recording(),
+                #[cfg(not(target_os = "linux"))]
                 STORE_KEY_CONTENT_MENU_ID => self.toggle_store_key_content(),
                 NOTIFICATION_ACCESS_MENU_ID => self.handle_notification_access_action(),
                 LAUNCH_AT_STARTUP_MENU_ID => self.toggle_launch_at_startup(),
@@ -2452,6 +2510,7 @@ impl Tray {
         self.apply_recording_visual_state();
     }
 
+    #[cfg(not(target_os = "linux"))]
     fn toggle_store_key_content(&mut self) {
         // muda auto-toggles the checkmark before this handler runs; the config
         // is the source of truth, so derive the new state from it and force the

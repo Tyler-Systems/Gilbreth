@@ -389,21 +389,79 @@ fn x_keysym(key: HotkeyKey) -> Option<u32> {
     Some(keysym)
 }
 
-/// Stub dialog (the MAC-0 posture): logged, echoed to stderr — a Linux
-/// viewer is launched from a terminal, and the startup-failure alert must
-/// reach the person who launched it — never silently swallowed.
-pub fn alert(title: &str, message: &str, kind: AlertKind) {
-    warn!(
-        title,
-        message,
-        ?kind,
-        "alert dialog logged only (no Linux dialog surface)"
-    );
-    eprintln!("{title}: {message}");
+/// Run one modal dialog in a `--dialog` child of this executable and block
+/// for its answer (see `dialog_host`). `None` when no answer came back — a
+/// missing display, a spawn failure, a killed child — and every caller
+/// turns that into its own fail-safe rather than a guess.
+fn run_dialog(request: crate::dialog_host::DialogWireRequest) -> Option<ConfirmAnswer> {
+    use std::io::Write;
+
+    let executable = match env::current_exe() {
+        Ok(executable) => executable,
+        Err(error) => {
+            warn!(%error, "cannot resolve this executable to raise a dialog");
+            return None;
+        }
+    };
+    let encoded = match serde_json::to_vec(&request) {
+        Ok(encoded) => encoded,
+        Err(error) => {
+            warn!(%error, "cannot encode a dialog request");
+            return None;
+        }
+    };
+    let mut child = match Command::new(executable)
+        .arg("--dialog")
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(error) => {
+            warn!(%error, "cannot start the dialog process");
+            return None;
+        }
+    };
+    // Write and drop the pipe: the child reads to EOF before it renders.
+    if let Some(mut stdin) = child.stdin.take() {
+        if let Err(error) = stdin.write_all(&encoded) {
+            warn!(%error, "cannot deliver the dialog request");
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
+    }
+    match child.wait() {
+        Ok(status) => crate::dialog_host::answer_from_status(status.code()),
+        Err(error) => {
+            warn!(%error, "the dialog process could not be awaited");
+            None
+        }
+    }
 }
 
-/// Stub confirm (the MAC-0 posture): every confirm answers negative — the
-/// fail-safe refusal, so no destructive flow can proceed through a dialog
+/// Blocking acknowledgement. Also echoed to stderr: a Linux build is often
+/// launched from a terminal, and a startup-failure alert must reach the
+/// person who launched it even if the dialog itself cannot open.
+pub fn alert(title: &str, message: &str, kind: AlertKind) {
+    eprintln!("{title}: {message}");
+    let request = crate::dialog_host::DialogWireRequest::new(
+        title,
+        message,
+        kind,
+        crate::dialog_host::WireButtons::Ok,
+        false,
+    );
+    if run_dialog(request).is_none() {
+        warn!(
+            title,
+            ?kind,
+            "alert could not be shown; it was logged and echoed instead"
+        );
+    }
+}
+
+/// Blocking confirm. A dialog that could not be shown answers negative —
+/// the fail-safe refusal, so no destructive flow proceeds on a question
 /// nobody saw.
 pub fn confirm(
     title: &str,
@@ -412,38 +470,52 @@ pub fn confirm(
     buttons: ConfirmButtons,
     default_negative: bool,
 ) -> bool {
-    warn!(
+    let request = crate::dialog_host::DialogWireRequest::new(
         title,
         message,
-        ?kind,
-        ?buttons,
+        kind,
+        buttons.into(),
         default_negative,
-        "confirm dialog auto-declined (no Linux dialog surface)"
     );
-    false
+    match run_dialog(request) {
+        Some(ConfirmAnswer::Positive) => true,
+        Some(_) => false,
+        None => {
+            warn!(
+                title,
+                ?kind,
+                ?buttons,
+                "confirm could not be shown; declining as the fail-safe"
+            );
+            false
+        }
+    }
 }
 
-/// Stub three-way confirm: `Dismissed` is the do-nothing outcome, matching
-/// the first-run consent design's rule that the safe path is also the
-/// deferral path.
-///
-/// Logged at info, unlike its `alert`/`confirm` neighbours. Its one caller
-/// is first-run consent, whose deferral is the *designed* Linux outcome —
-/// capture runs lean and asks again next launch — so it recurs every
-/// launch, and at warn it would put every Linux run permanently in the
-/// Diagnostics REVIEW state (the classifier counts levels, not text) and
-/// drain the signal from real warnings. `confirm` stays at warn: there a
-/// declined dialog means a destructive action the user asked for did not
-/// happen. The message is unchanged, so the log still records that no
-/// consent dialog was seen.
+/// Blocking three-way Yes / No / Cancel confirm (first-run consent).
+/// `Dismissed` is the do-nothing outcome, so an unshowable dialog defers —
+/// matching the design's rule that the safe path is also the deferral path.
+/// The deferral is logged at info, not warn: it is a designed outcome, and
+/// the Diagnostics classifier counts levels rather than text.
 pub fn confirm_three_way(title: &str, message: &str, kind: AlertKind) -> ConfirmAnswer {
-    info!(
+    let request = crate::dialog_host::DialogWireRequest::new(
         title,
         message,
-        ?kind,
-        "three-way confirm deferred (no Linux dialog surface)"
+        kind,
+        crate::dialog_host::WireButtons::YesNoCancel,
+        true,
     );
-    ConfirmAnswer::Dismissed
+    match run_dialog(request) {
+        Some(answer) => answer,
+        None => {
+            info!(
+                title,
+                ?kind,
+                "three-way confirm could not be shown; deferring the decision"
+            );
+            ConfirmAnswer::Dismissed
+        }
+    }
 }
 
 #[cfg(test)]
@@ -514,19 +586,23 @@ mod tests {
     }
 
     #[test]
-    fn dialogs_answer_fail_safe() {
-        // No dialog surface exists, so a confirm nobody can see must refuse
-        // and a three-way must defer — same contract as the off-main-thread
-        // macOS stubs.
+    fn dialogs_answer_fail_safe_when_no_answer_comes_back() {
+        // Under the test harness `current_exe` is the test binary, which
+        // rejects `--dialog` and exits non-zero — so these calls exercise
+        // the no-answer path for real: a child that never reported an
+        // answer. That is the branch worth pinning, because it is also what
+        // a missing display or a killed dialog produces. (The harness
+        // prints its own "unrecognized option" line; that is the child
+        // refusing, not a failure here.)
         alert("t", "m", AlertKind::Info);
         assert!(
             !confirm("t", "m", AlertKind::Warning, ConfirmButtons::YesNo, true),
-            "an unseen confirm must refuse"
+            "a confirm with no answer must refuse"
         );
         assert_eq!(
             confirm_three_way("t", "m", AlertKind::Info),
             ConfirmAnswer::Dismissed,
-            "an unseen three-way confirm must defer"
+            "a three-way with no answer must defer"
         );
     }
 
