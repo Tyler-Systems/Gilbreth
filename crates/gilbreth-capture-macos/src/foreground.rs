@@ -521,6 +521,7 @@ mod tests {
                 prev,
                 previous_focused_for_ms,
                 window_unfocused_for_ms,
+                ..
             } => (
                 window,
                 prev.as_ref(),
