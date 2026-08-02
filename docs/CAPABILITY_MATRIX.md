@@ -31,7 +31,7 @@ permission grant on Linux, so the platform has no permission column.
 | Mouse rows (clicks, double-clicks, drags, moves, wheel) | ✅ Raw Input + state machines | ✅ same tap, same state machines ported; trackpad precise scroll flushes 250 ms aggregates (same delta sum, fewer rows); momentum coast dropped | Input Monitoring | ✅ XI2 raw events, same state machines ported; wheel is discrete ±120 ticks (X wheel buttons, incl. touchpad-emulated notches); positions sampled per pass; fixed fallback click/drag metrics; absolute-device (touchscreen) motion absent |
 | Idle/active boundaries | ✅ | ✅ HID idle clock, same threshold | none | ✅ X idle clock (MIT-SCREEN-SAVER), same threshold |
 | Session lock/unlock, console connect/disconnect | ✅ WTS notifications | ✅ session-dictionary poll, same rows; fast-user-switch → `console` kind; `remote` kind stays Windows-only | none | ✅ same rows from a 1 s poll of elogind's `LockedHint` OR'd with the session locker's own surface (the `org.xfce.ScreenSaver`/`org.freedesktop.ScreenSaver` bus names); measured 2026-08-01: xfce4-screensaver never reports to elogind, so the locker surface is load-bearing, and a saver that blanks without demanding a password writes the same rows (X11 exposes no lock-vs-blank distinction) • console kind from the `Active` property; `remote` stays Windows-only • a blocked session stops foreground dwell and raw keyboard/mouse input is discarded for the duration — X11 keeps delivering it while the lock surface is up, and what it spells is the unlock password |
-| Power suspend/resume/status (`battery_saver` ← Low Power Mode) | ✅ broadcast messages | ✅ IOKit sleep/wake + divergence recovery; all wakes emit incl. dark wakes (higher row volume, recorded); `capped_dwell_ms` = 0 (uptime clock — sleep contributes no dwell) | none | ✅ elogind `PrepareForSleep` edges + the ported divergence recovery (CLOCK_BOOTTIME against CLOCK_MONOTONIC); `capped_dwell_ms` = 0 (sleep self-excludes from dwell: the monotonic clock stops, the macOS behavior); status from the sysfs power supplies with `battery_saver` honestly `None` (no Linux analog in this tier); a real suspend/resume cycle is not yet exercised live, per the status note |
+| Power suspend/resume/status (`battery_saver` ← Low Power Mode) | ✅ broadcast messages | ✅ IOKit sleep/wake + divergence recovery; all wakes emit incl. dark wakes (higher row volume, recorded); `capped_dwell_ms` = 0 (uptime clock — sleep contributes no dwell) | none | ✅ elogind `PrepareForSleep` edges + the ported divergence recovery (CLOCK_BOOTTIME against CLOCK_MONOTONIC); `capped_dwell_ms` = 0 (sleep self-excludes from dwell: the monotonic clock stops, the macOS behavior); status from the sysfs power supplies with `battery_saver` honestly `None` (no Linux analog in this tier); proven live 2026-08-01: a real sleep delivered the matched suspend/resume pair, the boottime tick delta equaled the wall gap, and the forced post-boundary status sample landed |
 | Display shape (`virtual_screen`) | ✅ | ✅ | none | ✅ root-window geometry, edge-detected on the 1 s cadence |
 | Process launch/exit + churn summaries | ✅ Toolhelp sweep, 5 s | ✅ libproc sweep, 5 s, same tracker/filter (hoisted to core); a process denying every unprivileged read is absent (Windows always has a name) | none | ✅ procfs sweep, 5 s, same core tracker/filter; kernel threads excluded (Toolhelp/libproc parity); always has a name (`comm`) |
 | Clipboard rows (`clipboard_used`) | ✅ metadata incl. `text_char_count`/`byte_size` | ✅ **metadata-only, permanently**: kind/count from declared types; sizes always `None` (macOS 26 pasteboard privacy alert-gates data reads); additive `concealed` kind for password-manager copies (mac and Linux) | none | ✅ **metadata-only, permanently**: XFixes owner-change events plus one `TARGETS` type-list round trip, never any content target (sizing X clipboard data means transferring it, so sizes stay `None` by construction); sub-second copies coalesce on the 1 s cadence; owner death writes `empty`, a refusing or silent owner writes `unavailable`; `concealed` from the KDE password-manager hint, presence-only (over-marking, never leaking) |
@@ -160,13 +160,17 @@ Concise status:
 > buses); opening and closing a window writes lifecycle rows through the
 > seeded/observed/synthesized origin arc; a copy writes one
 > metadata-only clipboard row with kind and format count and no sizes.
-> Not exercised live, recorded rather than implied: a real suspend/resume
-> cycle (the `PrepareForSleep` subscription armed against the live system
-> bus and the recovery paths are unit-covered, but no PrepareForSleep
-> signal has been observed end to end), a console VT switch, and a
-> password-demanding lock (this machine's saver has locking disabled, so
-> the surface exercised was the same saver window without its password
-> dialog). No packaged Linux release is planned.
+> A real suspend/resume followed the same evening: one sleep on the
+> dogfood machine delivered the PrepareForSleep pair end to end - the
+> segment closed with its dwell before the suspend row, the resume
+> matched, the boottime tick delta equaled the wall-clock gap (sleep
+> contributed no dwell), and the forced status sample recorded a real
+> battery change. Still not exercised live, recorded rather than
+> implied: a console VT switch, the recovery lanes (every observed sleep
+> so far delivered both signals), and a password-demanding lock (this
+> machine's saver has locking disabled, so the surface exercised was the
+> same saver window without its password dialog). No packaged Linux
+> release is planned.
 
 > **Current through 2026-08-01 (LIN-1):** LIN-1 landed on 2026-08-01 and this
 > column is its contract, with the same day's follow-up closing its two
