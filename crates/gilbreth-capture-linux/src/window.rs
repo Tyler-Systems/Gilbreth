@@ -72,6 +72,9 @@ pub(crate) struct WindowMonitor<CL, WD> {
     excluded: HashSet<u32>,
     seeded: bool,
     last_read: Option<Instant>,
+    /// A post-erase reseed is waiting for the next successful list read.
+    reseed_pending: bool,
+    reseed_redacts_titles: bool,
 }
 
 impl<CL, WD> WindowMonitor<CL, WD>
@@ -87,13 +90,27 @@ where
             excluded: HashSet::new(),
             seeded: false,
             last_read: None,
+            reseed_pending: false,
+            reseed_redacts_titles: false,
         }
+    }
+
+    /// Post-erase reseed: on the next successful list read, the tracker
+    /// rebuilds from scratch and EMITS seeded `window_opened` rows (the
+    /// Windows `reseed_with_events_at` shape — the replacement session
+    /// must know its open windows), with `opened_at` rebased so later
+    /// closes cannot inherit pre-reset durations. Deferred to a
+    /// successful read so a blackout at reseed time loses nothing.
+    pub(crate) fn request_reseed(&mut self, redact_titles: bool) {
+        self.reseed_pending = true;
+        self.reseed_redacts_titles = redact_titles;
     }
 
     /// One service-cadence pass. `dirty` is the pump's `PropertyNotify`
     /// edge; the list is read on that edge and on the recheck cadence.
     pub(crate) fn poll(&mut self, now: Instant, dirty: bool, events: &mut Vec<Captured>) {
-        let read_due = dirty
+        let read_due = self.reseed_pending
+            || dirty
             || self.last_read.is_none_or(|last| {
                 now.saturating_duration_since(last) >= CLIENT_LIST_RECHECK_INTERVAL
             });
@@ -105,6 +122,46 @@ where
             return;
         };
         let live: HashSet<u32> = list.into_iter().collect();
+
+        if self.reseed_pending {
+            self.reseed_pending = false;
+            let redact = std::mem::take(&mut self.reseed_redacts_titles);
+            self.windows.clear();
+            self.excluded.clear();
+            self.seeded = true;
+            for xid in live {
+                let Some(details) = (self.details_provider)(xid) else {
+                    continue;
+                };
+                if details.excluded {
+                    self.excluded.insert(xid);
+                    continue;
+                }
+                let window = WindowRef {
+                    hwnd: u64::from(xid),
+                    exe: details.exe,
+                    title: if redact { String::new() } else { details.title },
+                    pid: details.pid,
+                };
+                self.windows.insert(
+                    xid,
+                    OpenWindow {
+                        window: window.clone(),
+                        opened_at: now,
+                        origin: WindowLifecycleOrigin::Seeded,
+                    },
+                );
+                events.push(Captured::new(
+                    Source::Window,
+                    now,
+                    EventPayload::WindowOpened {
+                        window,
+                        origin: WindowLifecycleOrigin::Seeded,
+                    },
+                ));
+            }
+            return;
+        }
 
         // Vanished first (Windows emits DESTROY before the replacement's
         // CREATE lands in practice; either order is consistent, one is
@@ -381,6 +438,77 @@ mod tests {
             .collect();
         origins_and_ids.sort();
         assert_eq!(origins_and_ids, vec![(7, 4_000), (9, 3_000)]);
+    }
+
+    #[test]
+    fn reseed_rebuilds_with_emitted_seeded_rows_and_rebased_clocks() {
+        let (script, mut monitor) = monitor(vec![7, 90]);
+        let base = Instant::now();
+        let mut events = Vec::new();
+
+        monitor.poll(base, true, &mut events);
+        assert!(events.is_empty(), "startup seeding is silent");
+
+        // The erase happens; the replacement session must know its open
+        // windows, so THIS seeding emits rows (the Windows
+        // reseed_with_events_at shape), docks still excluded.
+        monitor.request_reseed(false);
+        monitor.poll(base + Duration::from_secs(10), false, &mut events);
+        assert_eq!(kinds(&events), vec!["window_opened"]);
+        match &events[0].payload {
+            EventPayload::WindowOpened { window, origin } => {
+                assert_eq!(window.hwnd, 7);
+                assert_eq!(*origin, WindowLifecycleOrigin::Seeded);
+            }
+            other => panic!("expected the seeded open, got {other:?}"),
+        }
+        events.clear();
+
+        // A close after the reseed times from the reseed, not from the
+        // pre-erase open.
+        *script.list.borrow_mut() = Some(vec![]);
+        monitor.poll(base + Duration::from_secs(14), true, &mut events);
+        match &events[0].payload {
+            EventPayload::WindowClosed { open_for_ms, .. } => {
+                assert_eq!(*open_for_ms, 4_000, "opened_at rebased at reseed");
+            }
+            other => panic!("expected window_closed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_title_redacted_reseed_blanks_the_seeded_titles() {
+        let (_script, mut monitor) = monitor(vec![7]);
+        let base = Instant::now();
+        let mut events = Vec::new();
+
+        monitor.poll(base, true, &mut events);
+        monitor.request_reseed(true);
+        monitor.poll(base + Duration::from_secs(2), false, &mut events);
+        match &events[0].payload {
+            EventPayload::WindowOpened { window, .. } => {
+                assert_eq!(window.title, "", "redacted seed carries no title");
+                assert_eq!(window.exe, "/usr/bin/app7", "attribution survives");
+            }
+            other => panic!("expected the seeded open, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_reseed_waits_out_a_blackout_rather_than_losing_the_request() {
+        let (script, mut monitor) = monitor(vec![7]);
+        let base = Instant::now();
+        let mut events = Vec::new();
+
+        monitor.poll(base, true, &mut events);
+        *script.list.borrow_mut() = None;
+        monitor.request_reseed(false);
+        monitor.poll(base + Duration::from_secs(2), false, &mut events);
+        assert!(events.is_empty(), "blackout: the request stays pending");
+
+        *script.list.borrow_mut() = Some(vec![7]);
+        monitor.poll(base + Duration::from_secs(3), false, &mut events);
+        assert_eq!(kinds(&events), vec!["window_opened"], "seeded on recovery");
     }
 
     #[test]

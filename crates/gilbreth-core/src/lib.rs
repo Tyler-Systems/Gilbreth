@@ -3365,6 +3365,20 @@ pub mod power {
             ));
         }
 
+        /// After archive/reset or secure erase mints a replacement
+        /// session, the fresh DB has no power rows: forget suspend and
+        /// debounce state, and arm the next status sample to EMIT rather
+        /// than baseline (Windows re-seeds the current status after its
+        /// reset; the silent-first-baseline rule is about launch, not
+        /// about a reseed into an empty session).
+        pub fn reseed(&mut self) {
+            self.suspended = false;
+            self.last_resume_at = None;
+            self.status_baselined = true;
+            self.status_key = None;
+            self.last_status_at = None;
+        }
+
         /// Spans-sleep-minus-instant delta since the last sample, in ms;
         /// `None` when either clock is unavailable or no baseline exists
         /// yet (the first call baselines).
@@ -3658,6 +3672,53 @@ pub mod power {
                 &mut events,
             );
             assert_eq!(events.len(), 2);
+        }
+
+        #[test]
+        fn reseed_arms_the_next_status_sample_to_emit() {
+            let mut monitor = PowerMonitor::new();
+            let t0 = Instant::now();
+            let mut events = Vec::new();
+            let snap = Some(PowerStatusSnapshot {
+                ac_online: Some(true),
+                battery_percent: Some(80),
+                battery_saver: Some(false),
+            });
+
+            monitor.poll_status(t0, false, &mut || snap, &mut events);
+            assert!(events.is_empty(), "launch baselines silently");
+
+            monitor.on_will_sleep(&sample(
+                t0 + Duration::from_secs(1),
+                1_000,
+                PowerEdge::WillSleep,
+            ));
+            monitor.reseed();
+
+            // The unchanged status still emits into the fresh session, and
+            // the forgotten suspend means the next wake is unmatched
+            // rather than paired with pre-erase state.
+            monitor.poll_status(
+                t0 + Duration::from_secs(2),
+                false,
+                &mut || snap,
+                &mut events,
+            );
+            assert_eq!(events.len(), 1, "reseed re-emits the current status");
+            let wake = monitor
+                .on_did_wake(&sample(
+                    t0 + Duration::from_secs(3),
+                    3_000,
+                    PowerEdge::DidWake,
+                ))
+                .expect("post-reseed wake is a boundary");
+            assert!(matches!(
+                payloads(&wake.rows)[..],
+                [EventPayload::PowerResume {
+                    matched_suspend: false,
+                    ..
+                }]
+            ));
         }
 
         #[test]

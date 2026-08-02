@@ -81,6 +81,9 @@ pub(crate) struct ForegroundMonitor<P> {
     /// Last provider read (the recheck throttle).
     last_read: Option<Instant>,
     last_gate: PollGate,
+    /// One-shot: blank the title on the next successful read (the
+    /// title-redacted reseed).
+    redact_next_read_title: bool,
 }
 
 impl<P> ForegroundMonitor<P>
@@ -94,7 +97,20 @@ where
             last_poll: None,
             last_read: None,
             last_gate: PollGate::PausedByUser,
+            redact_next_read_title: false,
         }
+    }
+
+    /// Post-erase reseed: forget the segment state so the next enabled
+    /// pass re-reads and seeds a fresh segment into the replacement
+    /// session. `redact_title` blanks the seed row's title (the shared
+    /// writer API's title-redacted variant; no Linux flow requests it
+    /// today, but honoring the flag costs nothing and keeps the contract
+    /// whole).
+    pub(crate) fn reseed(&mut self, redact_title: bool) {
+        self.state = ForegroundState::default();
+        self.last_read = None;
+        self.redact_next_read_title = redact_title;
     }
 
     /// One service-cadence pass. `dirty` is the pump's `PropertyNotify`
@@ -147,10 +163,15 @@ where
         if read_due {
             self.last_read = Some(now);
             if let Some(active) = (self.provider)() {
+                let title = if std::mem::take(&mut self.redact_next_read_title) {
+                    String::new()
+                } else {
+                    active.title
+                };
                 let window = WindowRef {
                     hwnd: u64::from(active.xid),
                     exe: active.exe,
-                    title: active.title,
+                    title,
                     pid: active.pid,
                 };
                 events.extend(self.state.on_window_at(window, now));
@@ -473,6 +494,49 @@ mod tests {
                 previous_focused_for_ms,
                 ..
             } => assert_eq!(*previous_focused_for_ms, 10_000, "gap-capped dwell"),
+            other => panic!("expected focus_changed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reseed_forgets_the_segment_and_can_redact_the_next_seed_title() {
+        let (active, mut monitor) = monitor();
+        let base = Instant::now();
+        let mut events = Vec::new();
+
+        *active.borrow_mut() = window(7, "sensitive document");
+        monitor.poll(base, PollGate::Enabled, true, &mut events);
+        events.clear();
+
+        monitor.reseed(true);
+        monitor.poll(
+            base + Duration::from_millis(100),
+            PollGate::Enabled,
+            false,
+            &mut events,
+        );
+        assert_eq!(kinds(&events), vec!["focus_changed"], "fresh seed");
+        match &events[0].payload {
+            EventPayload::FocusChanged { window, prev, .. } => {
+                assert_eq!(window.title, "", "redacted reseed carries no title");
+                assert!(prev.is_none(), "no pre-erase attribution survives");
+            }
+            other => panic!("expected focus_changed, got {other:?}"),
+        }
+        events.clear();
+
+        // The redaction is one-shot: the next transition reads live.
+        *active.borrow_mut() = window(9, "next window");
+        monitor.poll(
+            base + Duration::from_millis(200),
+            PollGate::Enabled,
+            true,
+            &mut events,
+        );
+        match &events[0].payload {
+            EventPayload::FocusChanged { window, .. } => {
+                assert_eq!(window.title, "next window");
+            }
             other => panic!("expected focus_changed, got {other:?}"),
         }
     }

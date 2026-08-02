@@ -134,6 +134,12 @@ where
         }
     }
 
+    /// Post-erase reseed: a copy pending from before the wipe must not
+    /// materialize as the replacement session's first row.
+    pub(crate) fn reseed(&mut self) {
+        self.pending = None;
+    }
+
     /// One service-cadence pass: fold in this pass's translated signals,
     /// then issue or expire the pending `TARGETS` request. While the
     /// stream is off, signals are discarded at arrival and nothing stays
@@ -569,6 +575,34 @@ mod tests {
         assert!(events.is_empty(), "no fabricated verdict");
         monitor.poll(base + Duration::from_secs(3), true, [], &mut events);
         assert!(events.is_empty(), "nothing left pending either");
+    }
+
+    #[test]
+    fn reseed_drops_a_pending_copy_before_it_materializes() {
+        let (script, mut monitor) = monitor();
+        let base = Instant::now();
+        let mut events = Vec::new();
+
+        monitor.poll(
+            base,
+            true,
+            [ClipboardSignal::OwnerChanged { timestamp: 5_000 }],
+            &mut events,
+        );
+        assert_eq!(*script.requests.borrow(), vec![5_000], "request in flight");
+
+        monitor.reseed();
+        // The pre-erase answer arrives after the wipe: stale, no row.
+        monitor.poll(
+            base + Duration::from_millis(100),
+            true,
+            [ClipboardSignal::TargetsReply {
+                property_present: true,
+            }],
+            &mut events,
+        );
+        monitor.poll(base + Duration::from_secs(3), true, [], &mut events);
+        assert!(events.is_empty(), "nothing pending survives the reseed");
     }
 
     #[test]

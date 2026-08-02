@@ -634,6 +634,7 @@ where
     let mut pending_events = Vec::new();
     let mut last_noted_pid: Option<u32> = None;
     let mut session_blocked_last = false;
+    let mut last_reseed_generation = controls.reseed_generation();
 
     let result = loop {
         if stop.is_cancelled() || stop_requested.load(Ordering::SeqCst) {
@@ -656,6 +657,32 @@ where
         // regardless.
         let system_stream = settings.system && !suspended;
         let foreground_stream = settings.foreground && !suspended;
+
+        // Post-erase reseed (the Windows check_requested_reseed shape):
+        // the writer requests it after minting the replacement session and
+        // lifting suspension; deferred here while suspended so seed rows
+        // can never be dropped at the send gate. Fresh seeds for
+        // foreground, windows, system, idle, and power status; the input
+        // machines reset; a pre-erase pending copy is dropped. The session
+        // baseline deliberately persists — a lock spanning the erase must
+        // keep blocking, and the writer re-emits its own sensitive state.
+        if !suspended {
+            let generation = controls.reseed_generation();
+            if generation != last_reseed_generation {
+                last_reseed_generation = generation;
+                let redact_titles = controls.take_title_redaction_for_reseed();
+                keyboard_state = keyboard::KeyboardState::new();
+                mouse_state = mouse::MouseState::new();
+                foreground_monitor.reseed(redact_titles);
+                window_monitor.request_reseed(redact_titles);
+                system_monitor.reseed();
+                idle_monitor.reseed();
+                power_monitor.reseed();
+                clipboard_monitor.reseed();
+                info!(redact_titles, "capture state reseeded after reset");
+            }
+        }
+
         system_monitor.poll(now, system_stream, &mut pending_events);
         session_monitor.poll(now, system_stream, foreground_stream, &mut pending_events);
         // Clipboard metadata: this pass's selection traffic plus the
@@ -1565,6 +1592,110 @@ mod tests {
                 assert_eq!(*byte_size, None);
             }
             other => panic!("expected clipboard_used, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_requested_reseed_reseeds_foreground_windows_and_system_in_one_pass() {
+        let (tx, rx) = bounded(32);
+        let stop = StopToken::new();
+        let controls = CaptureControls::all_enabled();
+        let reseed_controls = controls.clone();
+        let io = ScriptedIo {
+            script: std::collections::VecDeque::from([
+                PumpSignals {
+                    focus_dirty: true,
+                    client_list_dirty: true,
+                    ..Default::default()
+                },
+                PumpSignals::default(),
+            ]),
+            stop: stop.clone(),
+            wait: Duration::ZERO,
+        };
+        // after_service runs before each pass's polls: pass 1 seeds
+        // normally, then requests the reseed the writer would request
+        // after secure erase; pass 2 must reseed everything at once.
+        let requester = {
+            let mut pass = 0u32;
+            move || {
+                pass += 1;
+                if pass == 2 {
+                    reseed_controls.request_reseed();
+                }
+            }
+        };
+        run_pump_loop(
+            tx,
+            stop,
+            Arc::new(AtomicBool::new(false)),
+            controls,
+            requester,
+            io,
+            Sources {
+                active_window: scripted_window,
+                client_list: || Some(vec![7]),
+                window_details: |xid| {
+                    Some(window::WindowDetails {
+                        pid: 1000 + xid,
+                        exe: format!("/usr/bin/app{xid}"),
+                        title: format!("window {xid}"),
+                        excluded: false,
+                    })
+                },
+                idle: || Some(0),
+                keymap: scripted_keymap,
+                pointer_position: || None,
+                screen: || {
+                    Some(system::VirtualScreenRect {
+                        width: 1920,
+                        height: 1080,
+                    })
+                },
+                info: system::system_info,
+                processes: || None,
+                session: || None,
+                power: QuietPower,
+                clipboard_request: |_| false,
+                clipboard_targets: || None,
+            },
+        )
+        .expect("scripted pump exits cleanly");
+
+        let mut rows = Vec::new();
+        while let Ok(captured) = rx.try_recv() {
+            rows.push(captured);
+        }
+        let kinds: Vec<&str> = rows.iter().map(|row| row.payload.kind()).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                // Pass 1: the normal launch seeds (window seeding silent).
+                "system_info",
+                "virtual_screen",
+                "focus_changed",
+                // Pass 2: the reseed re-seeds everything, and the window
+                // tracker now EMITS its seeded opens for the fresh session.
+                "system_info",
+                "virtual_screen",
+                "focus_changed",
+                "window_opened",
+                // Shutdown: the reseeded tracker still closes synthesized.
+                "focus_changed",
+                "window_closed",
+            ]
+        );
+        match &rows[6].payload {
+            gilbreth_core::EventPayload::WindowOpened { origin, .. } => {
+                assert_eq!(*origin, gilbreth_core::WindowLifecycleOrigin::Seeded);
+            }
+            other => panic!("expected the seeded open, got {other:?}"),
+        }
+        match &rows[5].payload {
+            gilbreth_core::EventPayload::FocusChanged { prev, .. } => {
+                assert!(prev.is_none(), "the reseeded segment has no pre-erase prev");
+            }
+            other => panic!("expected the reseed focus row, got {other:?}"),
         }
     }
 }

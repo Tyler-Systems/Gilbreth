@@ -82,6 +82,14 @@ where
         }
     }
 
+    /// Post-erase reseed: fresh edge state, so an idle period straddling
+    /// the wipe never yields an Active edge with no Idle row before it in
+    /// the replacement session (the disable-path reset).
+    pub(crate) fn reseed(&mut self) {
+        self.state = IdleState::new(self.threshold);
+        self.last_sample = None;
+    }
+
     /// One service-cadence pass; internally throttled to [`SAMPLE_INTERVAL`].
     pub(crate) fn poll(&mut self, now: Instant, enabled: bool, events: &mut Vec<Captured>) {
         if !enabled {

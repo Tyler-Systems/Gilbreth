@@ -50,6 +50,14 @@ where
         }
     }
 
+    /// Post-erase reseed: fresh seeds for the replacement session (the
+    /// disable-path re-baseline, applied without a toggle edge).
+    pub(crate) fn reseed(&mut self) {
+        self.seeded = false;
+        self.last_screen = None;
+        self.last_sample = None;
+    }
+
     /// One service-cadence pass; internally throttled to [`SAMPLE_INTERVAL`].
     pub(crate) fn poll(&mut self, now: Instant, enabled: bool, events: &mut Vec<Captured>) {
         if !enabled {
@@ -276,6 +284,34 @@ mod tests {
                 "virtual_screen"
             ],
             "re-enable re-seeds instead of edge-detecting stale state"
+        );
+    }
+
+    #[test]
+    fn reseed_reseeds_without_a_toggle_edge() {
+        let mut monitor = SystemMonitor::new(
+            || {
+                Some(VirtualScreenRect {
+                    width: 800,
+                    height: 600,
+                })
+            },
+            system_info,
+        );
+        let base = Instant::now();
+        let mut events = Vec::new();
+        monitor.poll(base, true, &mut events);
+        monitor.reseed();
+        monitor.poll(base + Duration::from_millis(100), true, &mut events);
+        assert_eq!(
+            kinds(&events),
+            vec![
+                "system_info",
+                "virtual_screen",
+                "system_info",
+                "virtual_screen"
+            ],
+            "the replacement session gets fresh seeds immediately"
         );
     }
 
