@@ -45,8 +45,8 @@ run Setup. Windows SmartScreen may warn while the signing certificate is new.
 Not on Windows? macOS capture works in development builds with no packaged
 release yet, and developers can
 [build from source](#getting-started-developers) on Windows, macOS, or
-Linux — on Linux that builds X11 ambient capture and the dashboard (LIN-1,
-a dogfood tier with no packaged release). The website is
+Linux — on Linux that builds X11 ambient capture and the dashboard (the
+dogfood tier, with no packaged release). The website is
 **[gilbreth.tylersystems.com](https://gilbreth.tylersystems.com/)**.
 
 <p align="center">
@@ -100,7 +100,7 @@ easier for the next person to find.
 |---|---|---|
 | Windows x64 | Supported. [`v0.1.2`](https://github.com/Tyler-Systems/Gilbreth/releases/tag/v0.1.2) is published, signed, and built from this source root. | None open. Later versions follow the [release process](docs/RELEASE_PROCESS.md). |
 | macOS arm64 | Ambient capture and dogfood work; no packaged release. | The macOS distribution work, before any macOS package ships. |
-| Linux | Ambient X11 capture and the dashboard build and run from source (LIN-1, the dogfood tier); the [capability matrix](docs/CAPABILITY_MATRIX.md) carries the Linux column. | LIN-2, the parity remainder (see the roadmap). No Linux product release is planned. |
+| Linux | Ambient X11 capture through the LIN-2 parity remainder and the dashboard build and run from source (the dogfood tier); the [capability matrix](docs/CAPABILITY_MATRIX.md) carries the Linux column. | None open. No Linux product release is planned. |
 | Contributions | Open. Issues need nothing; code needs a signed [contributor licence agreement](CONTRIBUTOR_AGREEMENT.md). | None open. |
 
 Maintainers and contributors: start with the
@@ -160,7 +160,7 @@ Gilbreth v2 is one Rust executable with two process roles: the long-running tray
 
 | Piece | Language | Responsibility | Status |
 |---|---|---|---|
-| **Capture** | Rust | Foreground/focus, keyboard, mouse, system, idle/active, power boundaries, presence/lock, clipboard metadata, and best-effort process launch/exit through Windows and macOS `EventSource` backends; window-lifecycle and notification rows are Windows-only. | M1/M5a + MAC-1 |
+| **Capture** | Rust | Foreground/focus, keyboard, mouse, system, idle/active, power boundaries, presence/lock, clipboard metadata, and best-effort process launch/exit through the Windows, macOS, and Linux `EventSource` backends; notification rows are Windows-only, and window-lifecycle rows are absent on macOS (the capability matrix carries the differences). | M1/M5a + MAC-1 + LIN-2 |
 | **Privacy filter** | Rust | A pipeline stage between capture and storage: title/key redaction, sensitive-context suppression, `is_sensitive` flagging. Default policy: permissive except protected contexts. | M0 mechanism + M5a hardening |
 | **Store** | Rust + SQLite | Single-writer, batched, WAL-mode local database — the source of truth and the contract. | M0 spine |
 | **Reader** | Rust | `gilbreth-read`: WAL-safe analytics and export construction over the SQLite contract. | S2 parity port complete |
@@ -227,7 +227,7 @@ Gilbreth/
 - **M6 — ML & beyond** — ML-driven recommendations and later platform expansion, including the macOS distribution work that a public macOS package waits on.
 - **LIN-0 — Linux viewer**: landed on 2026-08-01. The read-only `gilbreth-app --dashboard` builds and runs from source on X11, and the capture process declines with a pointer to the dashboard.
 - **LIN-1 — Linux ambient capture**: landed on 2026-08-01, the dogfood tier, X11 only. The `gilbreth-capture-linux` backend carries the permission-free streams that feed Today, Week, Analytics, and Input Exposure: focus segments with titles (EWMH), idle/active (the X server idle clock), keyboard and mouse rows (XInput2 raw events), display shape, and the process sweep (procfs through the shared core tracker), plus the StatusNotifier tray, the XGrabKey pause hotkey, and XDG autostart in the shell. The capability matrix carries the Linux column.
-- **LIN-2 — Linux parity remainder**: the streams X11 and D-Bus can carry honestly: window lifecycle from the client list, session lock/unlock and power boundaries from elogind, and clipboard metadata from XFixes selection events, with a recorded fail-closed sensitive-context posture. Record Routine and the encrypted archive stay absent by decision record, Wayland stays absent by design, and no packaged Linux release is planned.
+- **LIN-2 — Linux parity remainder**: landed on 2026-08-01, X11 only. Window lifecycle from the client list with the seeded-at-startup origin; session lock/unlock boundaries feeding the foreground dwell gate, from elogind composed with the session locker's own lock surface (measured live: the Xfce locker never reports to elogind alone); power suspend/resume/status from PrepareForSleep with the ported missed-boundary recovery; and clipboard metadata from XFixes selection events, a TARGETS type-list round trip and never content. The fail-closed sensitive-context posture is recorded in the capability matrix: no password-field probe exists on X11 in this tier, the key-content opt-in stays absent, and raw input is discarded while the session is locked. Record Routine and the encrypted archive stay absent by decision record, Wayland stays absent by design, and no packaged Linux release is planned.
 
 **Completed:** **R0 "usable by a stranger" on 2026-07-04**, and **R1's first packaged Windows build on 2026-07-18**. Both happened in the private repository, and that package is not republished here. Discovery and macOS packaging come next. The friction-discovery triad already ships from captured data: **repetition** (routine motifs, cross-app copy hand-offs), **fragmentation** (focus metrics, resumption lag), and **fatigue** (Input Exposure).
 
@@ -256,7 +256,7 @@ python scripts/review_run.py
 Verify either supported developer install with `.\scripts\verify_build_install.ps1`. The separate signed elevated-helper distribution lane remains deferred in the roadmap.
 
 On Linux (X11), `cargo run -p gilbreth-app` starts ambient capture with the
-tray and pause hotkey (LIN-1, the dogfood tier), and the same
+tray and pause hotkey (the dogfood tier), and the same
 `-- --dashboard` flag opens the dashboard against the local data root. A
 Wayland session declines capture by design.
 

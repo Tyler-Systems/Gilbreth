@@ -1,8 +1,8 @@
 # Capability matrix: what Gilbreth captures per platform
 
 > **Status: CURRENT LIVING CONTRACT, updated through 2026-08-01. MAC-1 is
-> complete, LIN-1 added the Linux column, and the README and maintainer guide
-> link here as the public account
+> complete, LIN-1 added the Linux column, LIN-2 filled its remainder rows,
+> and the README and maintainer guide link here as the public account
 > of platform differences. Every platform change must update its row.** The
 > schema is the single cross-platform contract
 > ([schema/README.md](../schema/README.md)); rows below say what each
@@ -16,27 +16,27 @@ thinner, never silently different. Readers feature-probe rather than require
 kinds. Linux is **X11 only, a dogfood tier with no packaged release**:
 Wayland is absent by design (its compositors deliberately do not expose what
 these streams read), and a Wayland session declines capture rather than
-approximating. Streams marked LIN-2 are the roadmap's honest remainder, not
-gaps discovered later. No stream below needs a permission grant on Linux, so
-the platform has no permission column.
+approximating. The LIN-2 remainder landed 2026-08-01, so the column now
+carries every stream X11 can serve honestly. No stream below needs a
+permission grant on Linux, so the platform has no permission column.
 
 ## Stream-by-stream
 
-| Capability | Windows | macOS | macOS permission | Linux (X11, LIN-1) |
+| Capability | Windows | macOS | macOS permission | Linux (X11, LIN-1 + LIN-2) |
 |---|---|---|---|---|
 | App focus segments (`focus_changed`, dwell) | ✅ WinEvent hooks | ✅ NSWorkspace poll, same rows | none | ✅ EWMH `_NET_ACTIVE_WINDOW` events + 1 s recheck, same rows; `hwnd` carries the X window id |
 | Focused-window titles on focus rows | ✅ whenever Foreground is on (see toggle asymmetry below) | ✅ when the `windows` toggle is on AND Accessibility granted; degrades to app granularity otherwise | Accessibility | ✅ whenever Foreground is on (the Windows posture — X11 gates nothing behind a permission) |
-| All-window lifecycle (`window_opened`/`window_closed`) | ✅ WinEvent hooks | ❌ **absent by design** — the public all-windows-with-titles API is Screen Recording-gated (banned) | — | ❌ absent until LIN-2 (the client list) |
+| All-window lifecycle (`window_opened`/`window_closed`) | ✅ WinEvent hooks | ❌ **absent by design** — the public all-windows-with-titles API is Screen Recording-gated (banned) | — | ✅ client-list diff (`_NET_CLIENT_LIST` events + 1 s recheck), same origins: seeded silently at startup, observed opens/closes with the open-time identity kept for the close row, synthesized closes at shutdown; dock/desktop windows excluded (the taskbar-filter analog) |
 | Keyboard rows (`key`, key-down only, positional names) | ✅ Raw Input | ✅ one listen-only CGEventTap, same name vocabulary (`Cmd`/`Option`/`Fn` additive) | Input Monitoring | ✅ XInput2 raw events, same name vocabulary from the live keymap (Super maps to the `win` modifier); autorepeat filtered by flag plus timestamp pair |
 | Mouse rows (clicks, double-clicks, drags, moves, wheel) | ✅ Raw Input + state machines | ✅ same tap, same state machines ported; trackpad precise scroll flushes 250 ms aggregates (same delta sum, fewer rows); momentum coast dropped | Input Monitoring | ✅ XI2 raw events, same state machines ported; wheel is discrete ±120 ticks (X wheel buttons, incl. touchpad-emulated notches); positions sampled per pass; fixed fallback click/drag metrics; absolute-device (touchscreen) motion absent |
 | Idle/active boundaries | ✅ | ✅ HID idle clock, same threshold | none | ✅ X idle clock (MIT-SCREEN-SAVER), same threshold |
-| Session lock/unlock, console connect/disconnect | ✅ WTS notifications | ✅ session-dictionary poll, same rows; fast-user-switch → `console` kind; `remote` kind stays Windows-only | none | ❌ absent until LIN-2 (elogind) |
-| Power suspend/resume/status (`battery_saver` ← Low Power Mode) | ✅ broadcast messages | ✅ IOKit sleep/wake + divergence recovery; all wakes emit incl. dark wakes (higher row volume, recorded); `capped_dwell_ms` = 0 (uptime clock — sleep contributes no dwell) | none | ❌ absent until LIN-2 (elogind); sleep self-excludes from dwell (monotonic clock, the macOS behavior) |
+| Session lock/unlock, console connect/disconnect | ✅ WTS notifications | ✅ session-dictionary poll, same rows; fast-user-switch → `console` kind; `remote` kind stays Windows-only | none | ✅ same rows from a 1 s poll of elogind's `LockedHint` OR'd with the session locker's own surface (the `org.xfce.ScreenSaver`/`org.freedesktop.ScreenSaver` bus names); measured 2026-08-01: xfce4-screensaver never reports to elogind, so the locker surface is load-bearing, and a saver that blanks without demanding a password writes the same rows (X11 exposes no lock-vs-blank distinction) • console kind from the `Active` property; `remote` stays Windows-only • a blocked session stops foreground dwell and raw keyboard/mouse input is discarded for the duration — X11 keeps delivering it while the lock surface is up, and what it spells is the unlock password |
+| Power suspend/resume/status (`battery_saver` ← Low Power Mode) | ✅ broadcast messages | ✅ IOKit sleep/wake + divergence recovery; all wakes emit incl. dark wakes (higher row volume, recorded); `capped_dwell_ms` = 0 (uptime clock — sleep contributes no dwell) | none | ✅ elogind `PrepareForSleep` edges + the ported divergence recovery (CLOCK_BOOTTIME against CLOCK_MONOTONIC); `capped_dwell_ms` = 0 (sleep self-excludes from dwell: the monotonic clock stops, the macOS behavior); status from the sysfs power supplies with `battery_saver` honestly `None` (no Linux analog in this tier); a real suspend/resume cycle is not yet exercised live, per the status note |
 | Display shape (`virtual_screen`) | ✅ | ✅ | none | ✅ root-window geometry, edge-detected on the 1 s cadence |
 | Process launch/exit + churn summaries | ✅ Toolhelp sweep, 5 s | ✅ libproc sweep, 5 s, same tracker/filter (hoisted to core); a process denying every unprivileged read is absent (Windows always has a name) | none | ✅ procfs sweep, 5 s, same core tracker/filter; kernel threads excluded (Toolhelp/libproc parity); always has a name (`comm`) |
-| Clipboard rows (`clipboard_used`) | ✅ metadata incl. `text_char_count`/`byte_size` | ✅ **metadata-only, permanently**: kind/count from declared types; sizes always `None` (macOS 26 pasteboard privacy alert-gates data reads); additive `concealed` kind for password-manager copies (mac-only) | none | ❌ absent until LIN-2 (XFixes selection events) |
+| Clipboard rows (`clipboard_used`) | ✅ metadata incl. `text_char_count`/`byte_size` | ✅ **metadata-only, permanently**: kind/count from declared types; sizes always `None` (macOS 26 pasteboard privacy alert-gates data reads); additive `concealed` kind for password-manager copies (mac and Linux) | none | ✅ **metadata-only, permanently**: XFixes owner-change events plus one `TARGETS` type-list round trip, never any content target (sizing X clipboard data means transferring it, so sizes stay `None` by construction); sub-second copies coalesce on the 1 s cadence; owner death writes `empty`, a refusing or silent owner writes `unavailable`; `concealed` from the KDE password-manager hint, presence-only (over-marking, never leaking) |
 | Notifications received (metadata) | ✅ WNS listener | ❌ **unsupported** — no public listener API; rows simply absent | — | ❌ **unsupported**: reading them means owning the notification-daemon role; rows simply absent |
-| Sensitive context: password fields | ✅ UIA probe (`password_field` reason) | ✅ AX secure-field probe, fail-closed, same reason — plus the stronger OS layer below. **Caveat:** apps that don't materialize an accessibility tree for passive readers (Chromium/Electron class) fail every probe; on sustained deterministic failure Gilbreth **announces itself to that app** (Electron's documented `AXManualAccessibility`; the one AX write in the product; the O3 pair, adopted 2026-07-14) and probes through its app element, after which typing clears; apps that still never answer stay **wholesale-redacted** (over-marking, never leaking) | Accessibility (probe only; keyboard never gates on it) | ❌ **no probe exists on X11 in this tier**, so the key-content opt-in it would protect is **absent from the UI too** (owner decision 2026-08-01, the Record Routine shape: not built, rather than shown without the protection behind it). Capture is lean-only from every surface: key names are omitted at the writer, and the redaction rules still apply. `privacy.store_key_content` in config.toml is still honoured for deliberate development use. LIN-2's sensitive-context decision record owns the next step |
+| Sensitive context: password fields | ✅ UIA probe (`password_field` reason) | ✅ AX secure-field probe, fail-closed, same reason — plus the stronger OS layer below. **Caveat:** apps that don't materialize an accessibility tree for passive readers (Chromium/Electron class) fail every probe; on sustained deterministic failure Gilbreth **announces itself to that app** (Electron's documented `AXManualAccessibility`; the one AX write in the product; the O3 pair, adopted 2026-07-14) and probes through its app element, after which typing clears; apps that still never answer stay **wholesale-redacted** (over-marking, never leaking) | Accessibility (probe only; keyboard never gates on it) | ❌ **no probe exists on X11 in this tier**, so the key-content opt-in it would protect is **absent from the UI too** (owner decision 2026-08-01, the Record Routine shape: not built, rather than shown without the protection behind it). Capture is lean-only from every surface: key names are omitted at the writer, and the redaction rules still apply. `privacy.store_key_content` in config.toml is still honoured for deliberate development use. **LIN-2 decision record (2026-08-01): the posture stays fail-closed and the opt-in stays absent.** LIN-2 added boundaries and metadata, not a probe; an AT-SPI probe would be a new capture surface carrying the Chromium-class blind spots the macOS caveat documents, and it is not built. What LIN-2 does add: raw input is discarded wholesale while the session lock surface is up, so unlock-password keystrokes never reach the channel even under the config-only development posture. Returning the opt-in to the Linux UI stays an owner decision, and it needs a real probe first |
 | Sensitive context: OS-enforced secure input | — (no analog; `secure_desktop` reason is Windows-only) | ✅ `secure_input` reason (additive): macOS itself withholds keystrokes from taps during password entry — stronger than a probe | none | — (no analog; X11 delivers raw events regardless) |
 | Input-relay/KVM hint (`input_origin`) | ✅ pinned-center heuristic | ✅ CGEvent source state (more direct) | Input Monitoring (same tap) | ❌ absent — no detector; the field is never set |
 | Record Routine (semantic action capture) | ✅ | ❌ **Windows-only** — tray items, Recordings tab, and the Analytics request button are absent from the macOS build, not merely disabled (reopen by decision record only) | — | ❌ same absence as macOS, by the same decision record |
@@ -93,24 +93,30 @@ operating system itself withholds keystrokes from Gilbreth (labeled
 X11 only, and a dogfood tier: no package, no installer, no release lane.
 Beyond that:
 
-1. **No window lifecycle, session, power, or clipboard rows** — the four
-   LIN-2 streams. Focus segments with titles are the window story until
-   then, and a Linux database simply has no rows of those kinds.
-2. **No notification counts** — reading them means registering as the
+1. **No notification counts** — reading them means registering as the
    session's notification daemon, which would displace the user's own.
-3. **No Record Routine and no archive/reset** — absent by the same
+2. **No Record Routine and no archive/reset** — absent by the same
    decision records that keep them off macOS, not by a Linux-specific
    limit. A `.gla` copied from a Windows install stays readable and
    removable.
-4. **No password-field suppression, and therefore no key-content
+3. **No password-field suppression, and therefore no key-content
    opt-in.** X11 has no probe in this tier, so rather than offer a
    setting whose protection does not exist here, the surface is absent:
    the tray item and the first-run posture dialog are not built on
-   Linux (owner decision 2026-08-01). Capture is lean-only from every
+   Linux (owner decision 2026-08-01, reaffirmed by the LIN-2 decision
+   record in the password-field row). Capture is lean-only from every
    surface, with key names omitted at the writer, and
    `privacy.store_key_content` in config.toml is still honoured for
    deliberate development use — the one way to reach the unprotected
-   posture.
+   posture. While the session lock surface is up, raw input is discarded
+   wholesale, so that posture never sees unlock-password keystrokes.
+4. **Lock evidence is a recorded composition.** elogind's `LockedHint`
+   OR the session locker's own surface: a locker that reports to neither
+   (or a lock flip shorter than the 1 s cadence) writes no rows, and a
+   saver that blanks without demanding a password writes the same rows
+   as a locking one, because X11 exposes no external distinction. The
+   session-row meaning on every platform is "the lock surface engaged,"
+   not "a password is required," so the rows stay meaning-constant.
 5. **No input-relay hint and no absolute-device motion** — a KVM's
    forwarded input is indistinguishable here, and a touchscreen's
    position-reporting motion is excluded rather than reported as huge
@@ -136,14 +142,33 @@ stream live from first launch.
 
 Linux matches **Windows** on this axis, not macOS: focus rows carry titles
 whenever Foreground is on, and the `windows` toggle gates only the
-lifecycle rows — which do not exist yet there. The reason is the same one
+lifecycle rows, exactly as on Windows now that LIN-2 carries them. The
+reason is the same one
 the Windows cell gives: X11 puts no permission in front of a title read,
 so there is no grant for the toggle to compose with. macOS as shipped
 remains strictly the most private of the three on this axis.
 
 Concise status:
 
-> **Current through 2026-08-01:** LIN-1 landed on 2026-08-01 and this
+> **Current through 2026-08-01 (LIN-2):** the parity remainder landed the
+> same day and was proven live on MX Linux/X11/Xfce: engaging and
+> dismissing the session lock surface ends and reseeds the foreground
+> segment with dwell capped at the boundary, keeps the unfocused
+> correlations across the block, and writes `session_lock`/
+> `session_unlock` rows (the locker-surface path and the elogind
+> `LockedHint` path were each exercised separately, live against both
+> buses); opening and closing a window writes lifecycle rows through the
+> seeded/observed/synthesized origin arc; a copy writes one
+> metadata-only clipboard row with kind and format count and no sizes.
+> Not exercised live, recorded rather than implied: a real suspend/resume
+> cycle (the `PrepareForSleep` subscription armed against the live system
+> bus and the recovery paths are unit-covered, but no PrepareForSleep
+> signal has been observed end to end), a console VT switch, and a
+> password-demanding lock (this machine's saver has locking disabled, so
+> the surface exercised was the same saver window without its password
+> dialog). No packaged Linux release is planned.
+
+> **Current through 2026-08-01 (LIN-1):** LIN-1 landed on 2026-08-01 and this
 > column is its contract, with the same day's follow-up closing its two
 > privacy holes: secure erase now confirms through a real dialog instead
 > of declining unseen, and the key-content opt-in is absent rather than
@@ -152,9 +177,9 @@ Concise status:
 > idle/active edges, key and mouse rows through the ported state machines,
 > display shape, the procfs sweep with its churn summary, the tray pause
 > toggle, the XGrabKey hotkey, and Today filling in the dashboard). The
-> four LIN-2 streams, the password-field gap, and the dialog stubs are
-> listed above as absences, not omissions. No packaged Linux release is
-> planned.
+> password-field gap and the remaining absences are listed above; the
+> four streams this note once listed as absent are LIN-2's, carried
+> since the note above. No packaged Linux release is planned.
 
 > **Current through 2026-07-19:** every specified MAC-1 capture slice, the
 > onboarding/Diagnostics permissions panel, and the per-platform dashboard

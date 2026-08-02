@@ -61,7 +61,7 @@ verifier-host operational tooling under `scripts/`:
 | `gilbreth-core` | The `Captured`/`Event` envelope types, the `EventSource` trait, the **sequencer**, the privacy `Policy`/filter, pipeline glue. **Platform-agnostic, no Win32.** | — |
 | `gilbreth-capture-windows` | Win32 implementations of `EventSource` (foreground, window, keyboard, mouse, system). | `gilbreth-core`, `windows` |
 | `gilbreth-capture-macos` | Implemented macOS ambient-capture backend from MAC-1; its deliberate capability differences are recorded in the capability matrix. | `gilbreth-core` |
-| `gilbreth-capture-linux` | Implemented Linux X11 ambient-capture backend from LIN-1 (the dogfood tier); its deliberate capability differences are recorded in the capability matrix. | `gilbreth-core`, `x11rb` |
+| `gilbreth-capture-linux` | Implemented Linux X11 ambient-capture backend from LIN-1 and LIN-2 (the dogfood tier); its deliberate capability differences are recorded in the capability matrix. | `gilbreth-core`, `x11rb` |
 | `gilbreth-store` | `rusqlite` connection, migrations, the batched single-writer. | `gilbreth-core`, `rusqlite` |
 | `gilbreth-read` | Native read-time analytics and replay-export construction over the SQLite contract. Read-only; no store ownership or UI. | `rusqlite`, `chrono` |
 | `gilbreth-dashboard` | Native egui shell, charts, seven product surfaces, and background read/action worker. | `gilbreth-read`, `eframe` |
