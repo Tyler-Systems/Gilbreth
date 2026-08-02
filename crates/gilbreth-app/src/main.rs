@@ -5133,7 +5133,9 @@ mod tests {
         ] {
             // Every margin pixel is fully transparent. Vacuous where the
             // inset is zero (Windows/macOS), which is the point: the same
-            // assertion describes all three platforms.
+            // assertion describes all three platforms. The empty range on
+            // those platforms is that vacuous case, not a reversed one.
+            #[allow(clippy::reversed_empty_ranges)]
             for edge in 0..TRAY_ICON_INSET {
                 for along in 0..SIZE {
                     for (x, y) in [
@@ -5189,8 +5191,9 @@ mod tests {
         }
         // And the margin genuinely lands outside the 32-unit design space,
         // which is what makes those samples transparent without a special
-        // case in either rasterizer.
-        if TRAY_ICON_INSET > 0 {
+        // case in either rasterizer. Written as != so the zero-inset
+        // platforms see a constant condition, not an extreme comparison.
+        if TRAY_ICON_INSET != 0 {
             assert!(icon_design_coord(0, 0, SAMPLES, SIZE, TRAY_ICON_INSET) < 0.0);
             assert!(
                 icon_design_coord(SIZE - 1, SAMPLES - 1, SAMPLES, SIZE, TRAY_ICON_INSET) > 32.0
