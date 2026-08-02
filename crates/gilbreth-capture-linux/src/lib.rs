@@ -20,6 +20,7 @@ mod hotkey;
 mod idle;
 mod keyboard;
 mod mouse;
+mod power;
 mod process;
 mod session;
 mod system;
@@ -391,7 +392,7 @@ impl PumpIo for XIo {
 /// The pump's capture providers, injected so tests drive scripted state
 /// through the real pump loop without an X server (the macOS `Sources`
 /// pattern).
-struct Sources<AW, ID, KM, PP, VS, SI, PR, SE> {
+struct Sources<AW, ID, KM, PP, VS, SI, PR, SE, PW> {
     active_window: AW,
     idle: ID,
     /// The keymap read, called at start and on `keymap_dirty`.
@@ -406,6 +407,30 @@ struct Sources<AW, ID, KM, PP, VS, SI, PR, SE> {
     processes: PR,
     /// The D-Bus session snapshot (elogind + the locker surface).
     session: SE,
+    /// The power seam: PrepareForSleep edges, the boottime clock, and the
+    /// sysfs status snapshot.
+    power: PW,
+}
+
+/// The production power seam: PrepareForSleep edges from the D-Bus
+/// watcher's queue, `CLOCK_BOOTTIME` as the spans-sleep clock, and the
+/// sysfs supply sweep as the status snapshot.
+struct DbusPowerSource {
+    watch: dbus::SessionWatch,
+}
+
+impl power::PowerSource for DbusPowerSource {
+    fn drain_edges(&mut self) -> Vec<power::PowerEdgeSample> {
+        self.watch.drain_power_edges()
+    }
+
+    fn continuous_ms(&mut self) -> Option<u64> {
+        power::boottime_ms()
+    }
+
+    fn status(&mut self) -> Option<power::PowerStatusSnapshot> {
+        power::power_status_snapshot()
+    }
 }
 
 /// Run the capture pump on the current thread until the stop token cancels
@@ -467,6 +492,9 @@ where
     let pointer_reader = reader.clone();
     let screen_reader = reader.clone();
     let session_reader = session_watch.clone();
+    let power_source = DbusPowerSource {
+        watch: session_watch.clone(),
+    };
     let result = run_pump_loop(
         tx,
         stop,
@@ -488,20 +516,21 @@ where
             info: system::system_info,
             processes: process::process_snapshot,
             session: move || session_reader.snapshot(),
+            power: power_source,
         },
     );
     session_watch.stop();
     result
 }
 
-fn run_pump_loop<F, IO, AW, ID, KM, PP, VS, SI, PR, SE>(
+fn run_pump_loop<F, IO, AW, ID, KM, PP, VS, SI, PR, SE, PW>(
     tx: Sender<Captured>,
     stop: StopToken,
     stop_requested: Arc<AtomicBool>,
     controls: CaptureControls,
     mut after_service: F,
     mut io: IO,
-    mut sources: Sources<AW, ID, KM, PP, VS, SI, PR, SE>,
+    mut sources: Sources<AW, ID, KM, PP, VS, SI, PR, SE, PW>,
 ) -> Result<(), CaptureError>
 where
     F: FnMut(),
@@ -514,11 +543,13 @@ where
     SI: FnMut() -> gilbreth_core::EventPayload,
     PR: FnMut() -> Option<Vec<gilbreth_core::ProcessSnapshotEntry>>,
     SE: FnMut() -> Option<session::SessionSnapshot>,
+    PW: power::PowerSource,
 {
     let mut foreground_monitor = foreground::ForegroundMonitor::new(sources.active_window);
     let mut idle_monitor = idle::IdleMonitor::new(controls.idle_threshold(), sources.idle);
     let mut system_monitor = system::SystemMonitor::new(sources.screen, sources.info);
     let mut session_monitor = session::SessionMonitor::new(sources.session);
+    let mut power_monitor = power::PowerMonitor::new();
     let mut process_monitor = gilbreth_core::ProcessMonitor::new(Instant::now());
     let mut keyboard_state = keyboard::KeyboardState::new();
     let mut mouse_state = mouse::MouseState::new();
@@ -550,6 +581,50 @@ where
         let foreground_stream = settings.foreground && !suspended;
         system_monitor.poll(now, system_stream, &mut pending_events);
         session_monitor.poll(now, system_stream, foreground_stream, &mut pending_events);
+
+        // Power boundaries (the ported macOS block): observed sleep/wake
+        // edges first, then the divergence detector for anything the
+        // signal path missed. Each boundary does the Windows state work
+        // in the ported order — input state machines reset and the open
+        // Foreground segment closes BEFORE the power rows — and the next
+        // foreground pass reseeds the fresh segment. Rows gate at `send`
+        // like every stream, so the state work runs even with the System
+        // stream off.
+        let mut power_boundary = false;
+        for sample in sources.power.drain_edges() {
+            let boundary = match sample.edge {
+                power::PowerEdge::WillSleep => power_monitor.on_will_sleep(&sample),
+                power::PowerEdge::DidWake => power_monitor.on_did_wake(&sample),
+            };
+            if let Some(boundary) = boundary {
+                mouse_state.reset_after_boundary();
+                keyboard_state.reset_after_boundary();
+                if boundary.close_foreground {
+                    foreground_monitor.flush_at(sample.at, &mut pending_events);
+                }
+                pending_events.extend(boundary.rows);
+                power_boundary = true;
+            }
+        }
+        if let Some(boundary) = power_monitor.poll_divergence(now, sources.power.continuous_ms()) {
+            mouse_state.reset_after_boundary();
+            keyboard_state.reset_after_boundary();
+            if boundary.close_foreground {
+                foreground_monitor.flush_at(now, &mut pending_events);
+            }
+            pending_events.extend(boundary.rows);
+            power_boundary = true;
+        }
+        // Status sample on the 1 s edge-detect cadence; a boundary forces
+        // the sample (Windows samples status at every real resume and
+        // recovery).
+        power_monitor.poll_status(
+            now,
+            power_boundary,
+            &mut || sources.power.status(),
+            &mut pending_events,
+        );
+
         process_monitor.poll(now, &controls, &mut sources.processes, &mut pending_events);
         let fg_gate = if !foreground_stream {
             foreground::PollGate::PausedByUser
@@ -797,6 +872,43 @@ mod tests {
         Some(keyboard::Keymap::new(8, 1, vec![0x70]))
     }
 
+    /// A power seam that never fires: no edges, no clock (divergence off),
+    /// no status.
+    struct QuietPower;
+
+    impl power::PowerSource for QuietPower {
+        fn drain_edges(&mut self) -> Vec<power::PowerEdgeSample> {
+            Vec::new()
+        }
+
+        fn continuous_ms(&mut self) -> Option<u64> {
+            None
+        }
+
+        fn status(&mut self) -> Option<power::PowerStatusSnapshot> {
+            None
+        }
+    }
+
+    /// A power seam that yields one scripted edge batch per pass.
+    struct ScriptedPower {
+        batches: std::collections::VecDeque<Vec<power::PowerEdgeSample>>,
+    }
+
+    impl power::PowerSource for ScriptedPower {
+        fn drain_edges(&mut self) -> Vec<power::PowerEdgeSample> {
+            self.batches.pop_front().unwrap_or_default()
+        }
+
+        fn continuous_ms(&mut self) -> Option<u64> {
+            None
+        }
+
+        fn status(&mut self) -> Option<power::PowerStatusSnapshot> {
+            None
+        }
+    }
+
     #[test]
     fn scripted_loop_emits_focus_rows_notes_the_exe_and_flushes_on_shutdown() {
         let (tx, rx) = bounded(16);
@@ -829,6 +941,7 @@ mod tests {
                 info: system::system_info,
                 processes: || None,
                 session: || None,
+                power: QuietPower,
             },
         )
         .expect("scripted pump exits cleanly");
@@ -891,6 +1004,7 @@ mod tests {
                 info: system::system_info,
                 processes: || None,
                 session: || None,
+                power: QuietPower,
             },
         )
         .expect("scripted pump exits cleanly");
@@ -976,6 +1090,7 @@ mod tests {
                         locked: true,
                     })
                 },
+                power: QuietPower,
             },
         )
         .expect("scripted pump exits cleanly");
@@ -1048,6 +1163,7 @@ mod tests {
                         locked: locked_provider.load(Ordering::SeqCst),
                     })
                 },
+                power: QuietPower,
             },
         )
         .expect("scripted pump exits cleanly");
@@ -1082,6 +1198,84 @@ mod tests {
                 );
             }
             other => panic!("expected the boundary close, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn scripted_suspend_resume_closes_the_segment_before_the_power_rows() {
+        let (tx, rx) = bounded(32);
+        let stop = StopToken::new();
+        let controls = CaptureControls::all_enabled();
+        let base = Instant::now();
+        let io = ScriptedIo {
+            script: std::collections::VecDeque::from([
+                PumpSignals {
+                    focus_dirty: true,
+                    ..Default::default()
+                },
+                PumpSignals::default(),
+                PumpSignals::default(),
+            ]),
+            stop: stop.clone(),
+            wait: Duration::ZERO,
+        };
+        let power = ScriptedPower {
+            batches: std::collections::VecDeque::from([
+                Vec::new(),
+                vec![power::PowerEdgeSample {
+                    at: base,
+                    continuous_ms: Some(10_000),
+                    edge: power::PowerEdge::WillSleep,
+                }],
+                vec![power::PowerEdgeSample {
+                    at: base,
+                    continuous_ms: Some(20_000),
+                    edge: power::PowerEdge::DidWake,
+                }],
+            ]),
+        };
+        run_pump_loop(
+            tx,
+            stop,
+            Arc::new(AtomicBool::new(false)),
+            controls,
+            || {},
+            io,
+            Sources {
+                active_window: scripted_window,
+                idle: || Some(0),
+                keymap: scripted_keymap,
+                pointer_position: || None,
+                screen: || None,
+                info: system::system_info,
+                processes: || None,
+                session: || None,
+                power,
+            },
+        )
+        .expect("scripted pump exits cleanly");
+
+        let mut rows = Vec::new();
+        while let Ok(captured) = rx.try_recv() {
+            rows.push(captured);
+        }
+        let kinds: Vec<&str> = rows.iter().map(|row| row.payload.kind()).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                "system_info",
+                "focus_changed", // seed
+                "focus_changed", // the suspend closes the segment first
+                "power_suspend",
+                "power_resume",
+            ],
+            "the Windows boundary order: segment close before the power rows"
+        );
+        match &rows[4].payload {
+            gilbreth_core::EventPayload::PowerResume {
+                matched_suspend, ..
+            } => assert!(matched_suspend, "the observed suspend matches"),
+            other => panic!("expected power_resume, got {other:?}"),
         }
     }
 }

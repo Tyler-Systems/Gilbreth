@@ -26,6 +26,12 @@
 //! are deliberately NOT latched into it: they are requests, not state — a
 //! `Lock` no locker honors would latch a block no unlock ever clears.
 //!
+//! The same thread listens for elogind's `PrepareForSleep` signal (LIN-2's
+//! power slice): `true` queues a WillSleep edge, `false` a DidWake edge,
+//! each stamped with `CLOCK_BOOTTIME` at receipt, and the pump drains the
+//! queue on its own cadence — the IOKit-callback-queue shape from the
+//! macOS backend, carried by a signal instead of a callback.
+//!
 //! Reads are live (property cache off) on a one-second cadence, the
 //! Windows/macOS session cadence; every read carries its own timeout so a
 //! hung bus degrades to a stale-then-absent snapshot instead of a wedged
@@ -46,6 +52,7 @@ use async_io::Timer;
 use tracing::{debug, info};
 use zbus::proxy::{CacheProperties, MethodFlags};
 
+use crate::power::{PowerEdge, PowerEdgeSample};
 use crate::session::SessionSnapshot;
 
 /// Snapshot refresh cadence — the shared 1 s session cadence.
@@ -75,6 +82,7 @@ const SAVER_NAMES: [(&str, &str, &str); 2] = [
 
 struct Shared {
     session: Mutex<Option<SessionSnapshot>>,
+    power_edges: Mutex<Vec<PowerEdgeSample>>,
 }
 
 /// Handle to the watcher thread: the pump samples [`snapshot`], and
@@ -97,6 +105,14 @@ impl SessionWatch {
         }
     }
 
+    /// Everything the PrepareForSleep listener queued since the last call.
+    pub(crate) fn drain_power_edges(&self) -> Vec<PowerEdgeSample> {
+        match self.shared.power_edges.lock() {
+            Ok(mut guard) => std::mem::take(&mut *guard),
+            Err(poisoned) => std::mem::take(&mut *poisoned.into_inner()),
+        }
+    }
+
     pub(crate) fn stop(&self) {
         self.stop.store(true, Ordering::SeqCst);
     }
@@ -107,6 +123,7 @@ impl SessionWatch {
 pub(crate) fn spawn_session_watch() -> SessionWatch {
     let shared = Arc::new(Shared {
         session: Mutex::new(None),
+        power_edges: Mutex::new(Vec::new()),
     });
     let stop = Arc::new(AtomicBool::new(false));
     let thread_shared = Arc::clone(&shared);
@@ -130,11 +147,13 @@ async fn timed<T>(future: impl std::future::Future<Output = T>, limit: Duration)
     .await
 }
 
-/// The elogind half: a live-read proxy on this user's session object plus
-/// the numeric session id the schema rows carry.
+/// The elogind half: a live-read proxy on this user's session object, the
+/// numeric session id the schema rows carry, and the manager's
+/// `PrepareForSleep` signal stream for the power slice.
 struct LoginSession {
     proxy: zbus::Proxy<'static>,
     session_id: u32,
+    sleep_stream: Option<zbus::proxy::SignalStream<'static>>,
 }
 
 async fn connect_login_session() -> Result<LoginSession, String> {
@@ -142,7 +161,7 @@ async fn connect_login_session() -> Result<LoginSession, String> {
         .await
         .ok_or_else(|| "system bus connection timed out".to_string())?
         .map_err(|error| format!("system bus connection failed: {error}"))?;
-    let manager: zbus::Proxy<'_> = zbus::Proxy::new(
+    let manager: zbus::Proxy<'static> = zbus::Proxy::new(
         &conn,
         "org.freedesktop.login1",
         "/org/freedesktop/login1",
@@ -150,6 +169,20 @@ async fn connect_login_session() -> Result<LoginSession, String> {
     )
     .await
     .map_err(|error| format!("login1 manager proxy failed: {error}"))?;
+    // Subscribed before anything else so a suspend racing setup is not
+    // lost; a failed subscription degrades to divergence-only recovery
+    // (declared, not fatal).
+    let sleep_stream = match timed(manager.receive_signal("PrepareForSleep"), CALL_TIMEOUT).await {
+        Some(Ok(stream)) => Some(stream),
+        Some(Err(error)) => {
+            info!(%error, "PrepareForSleep subscription failed; power edges degrade to divergence recovery");
+            None
+        }
+        None => {
+            info!("PrepareForSleep subscription timed out; power edges degrade to divergence recovery");
+            None
+        }
+    };
 
     // Our own session when the process runs inside one; otherwise this
     // user's seated session (a terminal launch outside the session scope,
@@ -203,7 +236,11 @@ async fn connect_login_session() -> Result<LoginSession, String> {
         .await
         .flatten_result();
     let session_id = id.as_deref().and_then(parse_session_id).unwrap_or(0);
-    Ok(LoginSession { proxy, session_id })
+    Ok(LoginSession {
+        proxy,
+        session_id,
+        sleep_stream,
+    })
 }
 
 /// elogind session ids are numeric strings for user sessions ("1"); a
@@ -272,8 +309,16 @@ impl<T, E> FlattenResult<T> for Option<Result<T, E>> {
     }
 }
 
+/// What woke the loop: the pacing tick, one PrepareForSleep edge, or the
+/// signal stream ending (bus loss; edges degrade to divergence recovery).
+enum WakeReason {
+    Tick,
+    Sleep(bool),
+    StreamEnded,
+}
+
 async fn watch(shared: Arc<Shared>, stop: Arc<AtomicBool>) {
-    let login = match connect_login_session().await {
+    let mut login = match connect_login_session().await {
         Ok(login) => Some(login),
         Err(reason) => {
             info!(%reason, "elogind session boundaries absent for this run");
@@ -288,12 +333,17 @@ async fn watch(shared: Arc<Shared>, stop: Arc<AtomicBool>) {
         }
     };
     if login.is_none() && saver.is_none() {
-        info!("no D-Bus session source available; session streams stay absent");
+        info!("no D-Bus session source available; session and power streams stay absent");
         return;
     }
+    let mut sleep_stream = login
+        .as_mut()
+        .and_then(|login| login.sleep_stream.take())
+        .map(Box::pin);
     info!(
         elogind = login.is_some(),
         saver_surface = saver.is_some(),
+        power_edges = sleep_stream.is_some(),
         "D-Bus session watch running on the 1 s cadence"
     );
 
@@ -303,6 +353,60 @@ async fn watch(shared: Arc<Shared>, stop: Arc<AtomicBool>) {
         if stop.load(Ordering::SeqCst) {
             return;
         }
+        // Wait for the pacing tick or a sleep edge, whichever fires first.
+        let reason = match sleep_stream.as_mut() {
+            Some(stream) => {
+                futures_lite::future::or(
+                    async {
+                        match futures_lite::StreamExt::next(stream).await {
+                            Some(message) => message
+                                .body()
+                                .deserialize::<bool>()
+                                .map(WakeReason::Sleep)
+                                .unwrap_or(WakeReason::Tick),
+                            None => WakeReason::StreamEnded,
+                        }
+                    },
+                    async {
+                        Timer::after(TICK).await;
+                        WakeReason::Tick
+                    },
+                )
+                .await
+            }
+            None => {
+                Timer::after(TICK).await;
+                WakeReason::Tick
+            }
+        };
+        if stop.load(Ordering::SeqCst) {
+            return;
+        }
+        match reason {
+            WakeReason::Sleep(start) => {
+                let edge = PowerEdgeSample {
+                    at: std::time::Instant::now(),
+                    continuous_ms: crate::power::boottime_ms(),
+                    edge: if start {
+                        PowerEdge::WillSleep
+                    } else {
+                        PowerEdge::DidWake
+                    },
+                };
+                info!(start, "PrepareForSleep edge queued");
+                match shared.power_edges.lock() {
+                    Ok(mut guard) => guard.push(edge),
+                    Err(poisoned) => poisoned.into_inner().push(edge),
+                }
+                crate::wake_pump();
+            }
+            WakeReason::StreamEnded => {
+                info!("PrepareForSleep stream ended; power edges degrade to divergence recovery");
+                sleep_stream = None;
+            }
+            WakeReason::Tick => {}
+        }
+
         let due = last_sample_at
             .is_none_or(|last| std::time::Instant::now().duration_since(last) >= SAMPLE_INTERVAL);
         if due {
@@ -345,10 +449,6 @@ async fn watch(shared: Arc<Shared>, stop: Arc<AtomicBool>) {
                 crate::wake_pump();
             }
         }
-        if stop.load(Ordering::SeqCst) {
-            return;
-        }
-        Timer::after(TICK).await;
     }
 }
 
