@@ -21,6 +21,11 @@ aead = { version = "0.5", features = ["stream"] }
 aes-gcm = "0.10"
 anyhow = "1"
 argon2 = "0.5"
+# LIN-2 D-Bus watcher plumbing: block_on and the wakeup timer for the one
+# thread that listens to elogind (the zbus decision below). Already in the
+# tree as zbus's own runtime (smol-rs) — direct use adds no new vendor
+# lineage, the objc2-family argument.
+async-io = "2"
 chrono = "0.4"
 crossbeam-channel = "0.5"
 # S4 UI stack: exact-pinned per the eframe pinning policy (ROADMAP S4) —
@@ -28,6 +33,10 @@ crossbeam-channel = "0.5"
 eframe = { version = "=0.35.0", features = ["persistence"] }
 egui = "=0.35.0"
 egui_kittest = { version = "=0.35.0", features = ["eframe", "snapshot", "wgpu"] }
+# LIN-2 D-Bus watcher plumbing: the stream/future combinators beside
+# async-io — same decision, same already-in-tree smol-rs lineage (a zbus
+# dependency today).
+futures-lite = "2"
 # ICU 75 / Unicode 15.1 has the same full casefold mappings as the frozen
 # Python 3.12 / Unicode 15.0 oracle. Keep exact until that oracle advances.
 icu_casemap = "=1.5.1"
@@ -122,3 +131,12 @@ x11rb = "0.13"
 # LIN-1 key names: X keysym constants for the keycode-to-shared-vocabulary
 # table. Already in the tree via winit (rust-windowing) — lineage unchanged.
 xkeysym = "0.2"
+# LIN-2 session/power boundaries: elogind speaks D-Bus (org.freedesktop.login1)
+# and zbus 5 is already compiled into the Linux build twice over, through
+# accesskit's AT-SPI backend (via eframe/winit) and through ksni — so direct
+# use adds no new vendor lineage (the dbus2 org is in the tree). Feature
+# selection matches what the tree already builds: default features OFF (the
+# defaults add blocking-api, which nothing else compiles) and async-io ON,
+# the executor stack ksni already runs on; tokio stays banned (§10). Consumed
+# from one dedicated watcher thread through block_on — threads, not async.
+zbus = { version = "5", default-features = false, features = ["async-io"] }

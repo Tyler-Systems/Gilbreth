@@ -1749,12 +1749,15 @@ dependencies = [
 name = "gilbreth-capture-linux"
 version = "0.1.2"
 dependencies = [
+ "async-io",
  "crossbeam-channel",
+ "futures-lite",
  "gilbreth-core",
  "libc",
  "tracing",
  "x11rb",
  "xkeysym",
+ "zbus",
 ]
 
 [[package]]

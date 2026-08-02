@@ -14,12 +14,14 @@
 //! approximating. Mirrors `gilbreth-capture-windows`'s crate-level target
 //! gate, so non-Linux workspace builds see an empty shell here.
 
+mod dbus;
 mod foreground;
 mod hotkey;
 mod idle;
 mod keyboard;
 mod mouse;
 mod process;
+mod session;
 mod system;
 mod xserver;
 
@@ -389,7 +391,7 @@ impl PumpIo for XIo {
 /// The pump's capture providers, injected so tests drive scripted state
 /// through the real pump loop without an X server (the macOS `Sources`
 /// pattern).
-struct Sources<AW, ID, KM, PP, VS, SI, PR> {
+struct Sources<AW, ID, KM, PP, VS, SI, PR, SE> {
     active_window: AW,
     idle: ID,
     /// The keymap read, called at start and on `keymap_dirty`.
@@ -402,6 +404,8 @@ struct Sources<AW, ID, KM, PP, VS, SI, PR> {
     info: SI,
     /// The procfs sweep; the shared core monitor throttles the cadence.
     processes: PR,
+    /// The D-Bus session snapshot (elogind + the locker surface).
+    session: SE,
 }
 
 /// Run the capture pump on the current thread until the stop token cancels
@@ -453,15 +457,17 @@ where
     info!(
         "Linux capture pump running: X11 connection + self-pipe waker + \
          EWMH foreground, X idle clock, XI2 raw keyboard/mouse, display \
-         shape, and procfs process streams"
+         shape, procfs process, and D-Bus session streams"
     );
 
+    let session_watch = dbus::spawn_session_watch();
     let reader = xserver::XReader::new(Arc::clone(&conn), root, atoms);
     let idle_reader = reader.clone();
     let keymap_reader = reader.clone();
     let pointer_reader = reader.clone();
     let screen_reader = reader.clone();
-    run_pump_loop(
+    let session_reader = session_watch.clone();
+    let result = run_pump_loop(
         tx,
         stop,
         stop_requested,
@@ -481,18 +487,21 @@ where
             screen: move || screen_reader.virtual_screen(),
             info: system::system_info,
             processes: process::process_snapshot,
+            session: move || session_reader.snapshot(),
         },
-    )
+    );
+    session_watch.stop();
+    result
 }
 
-fn run_pump_loop<F, IO, AW, ID, KM, PP, VS, SI, PR>(
+fn run_pump_loop<F, IO, AW, ID, KM, PP, VS, SI, PR, SE>(
     tx: Sender<Captured>,
     stop: StopToken,
     stop_requested: Arc<AtomicBool>,
     controls: CaptureControls,
     mut after_service: F,
     mut io: IO,
-    mut sources: Sources<AW, ID, KM, PP, VS, SI, PR>,
+    mut sources: Sources<AW, ID, KM, PP, VS, SI, PR, SE>,
 ) -> Result<(), CaptureError>
 where
     F: FnMut(),
@@ -504,16 +513,19 @@ where
     VS: FnMut() -> Option<system::VirtualScreenRect>,
     SI: FnMut() -> gilbreth_core::EventPayload,
     PR: FnMut() -> Option<Vec<gilbreth_core::ProcessSnapshotEntry>>,
+    SE: FnMut() -> Option<session::SessionSnapshot>,
 {
     let mut foreground_monitor = foreground::ForegroundMonitor::new(sources.active_window);
     let mut idle_monitor = idle::IdleMonitor::new(controls.idle_threshold(), sources.idle);
     let mut system_monitor = system::SystemMonitor::new(sources.screen, sources.info);
+    let mut session_monitor = session::SessionMonitor::new(sources.session);
     let mut process_monitor = gilbreth_core::ProcessMonitor::new(Instant::now());
     let mut keyboard_state = keyboard::KeyboardState::new();
     let mut mouse_state = mouse::MouseState::new();
     let mut keymap: Option<keyboard::Keymap> = None;
     let mut pending_events = Vec::new();
     let mut last_noted_pid: Option<u32> = None;
+    let mut session_blocked_last = false;
 
     let result = loop {
         if stop.is_cancelled() || stop_requested.load(Ordering::SeqCst) {
@@ -529,15 +541,22 @@ where
         let now = Instant::now();
         let settings = controls.settings();
         let suspended = controls.is_suspended();
-        // System first (the macOS ordering), then the process sweep — both
-        // gate rows at `send` while their state advances regardless.
+        // System first (the macOS ordering): its session tracking decides
+        // whether Foreground may accumulate dwell this pass. The session
+        // MECHANISM runs whenever Foreground needs it, independent of the
+        // System stream toggle; rows gate at `send` while state advances
+        // regardless.
         let system_stream = settings.system && !suspended;
+        let foreground_stream = settings.foreground && !suspended;
         system_monitor.poll(now, system_stream, &mut pending_events);
+        session_monitor.poll(now, system_stream, foreground_stream, &mut pending_events);
         process_monitor.poll(now, &controls, &mut sources.processes, &mut pending_events);
-        let fg_gate = if settings.foreground && !suspended {
-            foreground::PollGate::Enabled
-        } else {
+        let fg_gate = if !foreground_stream {
             foreground::PollGate::PausedByUser
+        } else if session_monitor.session_blocked() {
+            foreground::PollGate::BlockedBySession
+        } else {
+            foreground::PollGate::Enabled
         };
         foreground_monitor.poll(now, fg_gate, signals.focus_dirty, &mut pending_events);
         // The churn filter's focus rescue (Windows `note_focused_app`,
@@ -552,6 +571,25 @@ where
             }
         }
         idle_monitor.poll(now, settings.idle && !suspended, &mut pending_events);
+
+        // A session boundary (lock / console switch) resets the input
+        // state machines so no chord, drag, or click pair spans the
+        // boundary (the twins' reset_after_boundary), and raw input is
+        // DROPPED for the duration of the block: X11 keeps delivering raw
+        // events while the lock surface is up — what they spell is the
+        // unlock password — where Windows and macOS observe an empty
+        // stream during a lock. Parity is discarding them before any
+        // state machine or channel sees them (the recorded fail-closed
+        // posture; see session.rs).
+        let session_blocked = session_monitor.session_blocked();
+        if session_blocked && !session_blocked_last {
+            keyboard_state.reset_after_boundary();
+            mouse_state.reset_after_boundary();
+        }
+        session_blocked_last = session_blocked;
+        if session_blocked {
+            signals.raw_inputs.clear();
+        }
 
         // Keyboard + mouse: raw input drained this pass runs through the
         // derivation state machines, attributed to the active window just
@@ -719,10 +757,12 @@ mod tests {
 
     /// A scripted io seam: each pass pops the next scripted yield, and an
     /// exhausted script cancels the stop token — the whole loop runs
-    /// without an X server.
+    /// without an X server. A non-zero `wait` sleeps between passes so a
+    /// script can straddle the monitors' real-clock 1 s cadences.
     struct ScriptedIo {
         script: std::collections::VecDeque<PumpSignals>,
         stop: StopToken,
+        wait: Duration,
     }
 
     impl PumpIo for ScriptedIo {
@@ -736,7 +776,11 @@ mod tests {
             }
         }
 
-        fn wait(&mut self) {}
+        fn wait(&mut self) {
+            if !self.wait.is_zero() {
+                thread::sleep(self.wait);
+            }
+        }
     }
 
     fn scripted_window() -> Option<foreground::ActiveWindow> {
@@ -767,6 +811,7 @@ mod tests {
                 PumpSignals::default(),
             ]),
             stop: stop.clone(),
+            wait: Duration::ZERO,
         };
         run_pump_loop(
             tx,
@@ -783,6 +828,7 @@ mod tests {
                 screen: || None,
                 info: system::system_info,
                 processes: || None,
+                session: || None,
             },
         )
         .expect("scripted pump exits cleanly");
@@ -827,6 +873,7 @@ mod tests {
                 ..Default::default()
             }]),
             stop: stop.clone(),
+            wait: Duration::ZERO,
         };
         run_pump_loop(
             tx,
@@ -843,6 +890,7 @@ mod tests {
                 screen: || None,
                 info: system::system_info,
                 processes: || None,
+                session: || None,
             },
         )
         .expect("scripted pump exits cleanly");
@@ -878,6 +926,162 @@ mod tests {
                 assert_eq!(window.as_ref().expect("attributed").hwnd, 42);
             }
             other => panic!("expected click, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_blocked_session_gates_focus_and_discards_raw_input() {
+        let (tx, rx) = bounded(32);
+        let stop = StopToken::new();
+        let controls = CaptureControls::all_enabled();
+        let io = ScriptedIo {
+            script: std::collections::VecDeque::from([PumpSignals {
+                focus_dirty: true,
+                raw_inputs: vec![
+                    RawInput::Key(keyboard::RawKeyEvent {
+                        keycode: 8,
+                        press: true,
+                        flagged_repeat: false,
+                        time: 100,
+                    }),
+                    RawInput::Mouse(mouse::RawMouseKind::Down(gilbreth_core::MouseButton::Left)),
+                ],
+                ..Default::default()
+            }]),
+            stop: stop.clone(),
+            wait: Duration::ZERO,
+        };
+        run_pump_loop(
+            tx,
+            stop,
+            Arc::new(AtomicBool::new(false)),
+            controls,
+            || {},
+            io,
+            Sources {
+                active_window: scripted_window,
+                idle: || Some(0),
+                keymap: scripted_keymap,
+                pointer_position: || Some((10, 20)),
+                screen: || None,
+                info: system::system_info,
+                processes: || None,
+                // Locked from the very first pass: the unlock-password
+                // shape — raw events keep arriving while the lock surface
+                // is up.
+                session: || {
+                    Some(session::SessionSnapshot {
+                        session_id: 1,
+                        on_console: true,
+                        locked: true,
+                    })
+                },
+            },
+        )
+        .expect("scripted pump exits cleanly");
+
+        let mut kinds = Vec::new();
+        while let Ok(captured) = rx.try_recv() {
+            kinds.push(captured.payload.kind());
+        }
+        assert_eq!(
+            kinds,
+            vec!["system_info"],
+            "no focus seed (gate blocked), no key or click rows (raw input \
+             discarded while the session is blocked), and the first session \
+             observation is a baseline, not an edge"
+        );
+    }
+
+    /// The definition-of-done arc at loop level: lock closes the segment
+    /// and writes both rows, unlock reseeds. Real 1.05 s waits straddle
+    /// the session monitor's real-clock cadence — the one deliberately
+    /// slow test in this module.
+    #[test]
+    fn scripted_lock_unlock_arc_closes_dwell_and_writes_session_rows() {
+        let (tx, rx) = bounded(32);
+        let stop = StopToken::new();
+        let controls = CaptureControls::all_enabled();
+        let locked = Arc::new(AtomicBool::new(false));
+        let locked_provider = locked.clone();
+        let io = ScriptedIo {
+            script: std::collections::VecDeque::from([
+                PumpSignals {
+                    focus_dirty: true,
+                    ..Default::default()
+                },
+                PumpSignals::default(),
+                PumpSignals::default(),
+            ]),
+            stop: stop.clone(),
+            wait: Duration::from_millis(1_050),
+        };
+        // after_service runs before each pass's polls: pass 1 seeds
+        // unlocked, pass 2 samples the lock, pass 3 samples the unlock.
+        let lock_sequencer = {
+            let locked = locked.clone();
+            let mut pass = 0u32;
+            move || {
+                pass += 1;
+                locked.store(pass == 2, Ordering::SeqCst);
+            }
+        };
+        run_pump_loop(
+            tx,
+            stop,
+            Arc::new(AtomicBool::new(false)),
+            controls,
+            lock_sequencer,
+            io,
+            Sources {
+                active_window: scripted_window,
+                idle: || Some(0),
+                keymap: scripted_keymap,
+                pointer_position: || None,
+                screen: || None,
+                info: system::system_info,
+                processes: || None,
+                session: move || {
+                    Some(session::SessionSnapshot {
+                        session_id: 1,
+                        on_console: true,
+                        locked: locked_provider.load(Ordering::SeqCst),
+                    })
+                },
+            },
+        )
+        .expect("scripted pump exits cleanly");
+
+        let mut rows = Vec::new();
+        while let Ok(captured) = rx.try_recv() {
+            rows.push(captured);
+        }
+        let kinds: Vec<&str> = rows.iter().map(|row| row.payload.kind()).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                "system_info",
+                "focus_changed", // seed while unlocked
+                "session_lock",
+                "focus_changed", // the lock closes the segment — dwell stops
+                "session_unlock",
+                "focus_changed", // the unlock reseeds
+                "focus_changed", // shutdown close
+            ]
+        );
+        match &rows[3].payload {
+            gilbreth_core::EventPayload::FocusChanged {
+                prev,
+                previous_focused_for_ms,
+                ..
+            } => {
+                assert_eq!(prev.as_ref().expect("closing row").hwnd, 42);
+                assert!(
+                    (900..=1_400).contains(previous_focused_for_ms),
+                    "dwell capped at the lock boundary, got {previous_focused_for_ms}"
+                );
+            }
+            other => panic!("expected the boundary close, got {other:?}"),
         }
     }
 }

@@ -171,6 +171,15 @@ impl MouseState {
         }
     }
 
+    /// A session/power boundary drops active-button and double-click
+    /// tracking so no drag or click pair spans the boundary (the macOS
+    /// reset, ported; the trailing move aggregate still flushes normally —
+    /// its content is pre-boundary motion).
+    pub(crate) fn reset_after_boundary(&mut self) {
+        self.active.clear();
+        self.last_completed_click = None;
+    }
+
     /// Called once per pump service pass: flush a trailing move aggregate
     /// whose window has elapsed (Windows' per-message `flush_due`).
     pub(crate) fn flush_due(&mut self, now: Instant, out: &mut Vec<Captured>) {

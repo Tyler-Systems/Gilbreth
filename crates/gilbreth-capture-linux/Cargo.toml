@@ -12,8 +12,14 @@ tracing.workspace = true
 
 # The X11 seam (LIN-1 dependency decision, workspace manifest): pure-Rust
 # protocol, no C linkage. Extensions: xinput for XI2 raw input,
-# screensaver for the X idle clock. EWMH, XGrabKey, and the root-geometry
-# display shape are core protocol.
+# screensaver for the X idle clock. EWMH, XGrabKey, the root-geometry
+# display shape, and the LIN-2 client-list window lifecycle are core
+# protocol. The LIN-2 D-Bus seam (elogind session/power boundaries) rides
+# zbus with the async-io/futures-lite plumbing, one watcher thread beside
+# the pump — the workspace manifest records that decision.
 [target.'cfg(target_os = "linux")'.dependencies]
+async-io.workspace = true
+futures-lite.workspace = true
 x11rb = { workspace = true, features = ["screensaver", "xinput"] }
 xkeysym.workspace = true
+zbus.workspace = true

@@ -20,10 +20,12 @@
 //! The macOS calling-policy divergences are inherited deliberately:
 //! a user pause closes the segment (unpersisted — the send gate is already
 //! off), clears the unfocused correlations so the off period leaves no
-//! measurable trace, and re-seeds fresh at re-enable; a service gap past
-//! the missed-boundary threshold caps dwell at the last observed tick
-//! (Linux `Instant` is `CLOCK_MONOTONIC`, which excludes suspend, so like
-//! macOS the everyday trigger is a stall, not a lid-close).
+//! measurable trace, and re-seeds fresh at re-enable; a session block
+//! (LIN-2's lock/console gate) closes the segment persistently and keeps
+//! the correlations, per [`PollGate`]; a service gap past the
+//! missed-boundary threshold caps dwell at the last observed tick (Linux
+//! `Instant` is `CLOCK_MONOTONIC`, which excludes suspend, so like macOS
+//! the everyday trigger is a stall, not a lid-close).
 
 use std::time::{Duration, Instant};
 
@@ -49,14 +51,23 @@ pub(crate) struct ActiveWindow {
     pub(crate) title: String,
 }
 
-/// How a foreground pass is gated. LIN-1 has no session-block source (lock
-/// boundaries are LIN-2's elogind slice), so the only disabled gate is the
-/// privacy pause — which forgets the unfocused correlations, the macOS
-/// rule: the off period leaves no measurable trace.
+/// How a foreground pass is gated. The two disabled variants close the
+/// open segment identically but treat correlation state differently (the
+/// macOS rules, ported with the LIN-2 session slice):
+///
+/// - [`PollGate::PausedByUser`] is a privacy pause (stream toggle off or
+///   capture suspension): the unfocused timestamps are also forgotten so
+///   the off period leaves no measurable trace.
+/// - [`PollGate::BlockedBySession`] is a lock or console switch: dwell
+///   must not accumulate, but correlations persist — the block's
+///   boundaries are already persisted as `session_lock`/`session_unlock`
+///   rows (nothing to hide), and Windows keeps unfocused tracking across
+///   locks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PollGate {
     Enabled,
     PausedByUser,
+    BlockedBySession,
 }
 
 /// Feeds the shared segment state machine from the EWMH provider. Generic
@@ -69,7 +80,7 @@ pub(crate) struct ForegroundMonitor<P> {
     last_poll: Option<Instant>,
     /// Last provider read (the recheck throttle).
     last_read: Option<Instant>,
-    gate_enabled_last: bool,
+    last_gate: PollGate,
 }
 
 impl<P> ForegroundMonitor<P>
@@ -82,7 +93,7 @@ where
             state: ForegroundState::default(),
             last_poll: None,
             last_read: None,
-            gate_enabled_last: false,
+            last_gate: PollGate::PausedByUser,
         }
     }
 
@@ -98,21 +109,29 @@ where
         events: &mut Vec<Captured>,
     ) {
         if gate != PollGate::Enabled {
-            if self.gate_enabled_last {
-                // The closing row is intentionally unpersisted (the send
-                // gate is already off); the correlation clear is the
-                // privacy half — window_unfocused_for_ms must not span or
-                // disclose the off period.
+            if self.last_gate == PollGate::Enabled {
+                // A user pause's closing row is unpersisted (the send gate
+                // is already off); a session block's IS persisted — the
+                // dwell-must-stop correctness half. Both close gap-capped:
+                // a stalled pump can resume straight into a gated pass.
                 events.extend(self.end_current_gap_capped_at(now));
+            }
+            if gate == PollGate::PausedByUser && self.last_gate != PollGate::PausedByUser {
+                // Privacy: a re-seed after re-enable would read the
+                // unfocused timestamps back as window_unfocused_for_ms
+                // spanning the whole off period — disclosing exactly when
+                // capture was paused. Forget them; the pause leaves no
+                // measurable trace. (A session block deliberately does NOT
+                // clear — see PollGate.)
                 self.state.clear_unfocused_correlations();
             }
-            self.gate_enabled_last = false;
+            self.last_gate = gate;
             self.last_poll = Some(now);
             self.last_read = None;
             return;
         }
-        let enable_edge = !self.gate_enabled_last;
-        self.gate_enabled_last = true;
+        let enable_edge = self.last_gate != PollGate::Enabled;
+        self.last_gate = PollGate::Enabled;
 
         // Stall boundary: cap the open segment's dwell at the last observed
         // tick, then fall through and re-seed from the current window.
@@ -366,6 +385,59 @@ mod tests {
                     "the pause leaves no measurable trace"
                 );
                 assert!(prev.is_none(), "fresh seed, no prior attribution");
+            }
+            other => panic!("expected focus_changed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn session_block_closes_the_segment_and_keeps_correlations() {
+        let (active, mut monitor) = monitor();
+        let base = Instant::now();
+        let mut events = Vec::new();
+
+        *active.borrow_mut() = window(7, "t");
+        monitor.poll(base, PollGate::Enabled, true, &mut events);
+        events.clear();
+
+        // Lock: the closing row exists AND persists (the send gate stays
+        // open — this close is the dwell-correctness fix).
+        monitor.poll(
+            base + Duration::from_secs(5),
+            PollGate::BlockedBySession,
+            false,
+            &mut events,
+        );
+        assert_eq!(kinds(&events), vec!["focus_changed"], "boundary close");
+        match &events[0].payload {
+            EventPayload::FocusChanged {
+                previous_focused_for_ms,
+                ..
+            } => assert_eq!(*previous_focused_for_ms, 5_000, "dwell stops at lock"),
+            other => panic!("expected focus_changed, got {other:?}"),
+        }
+        events.clear();
+
+        // Unlock 60 s later: the reseed correlates the away time — a lock
+        // is persisted evidence (session rows), so unlike a user pause it
+        // has nothing to hide (the macOS rule).
+        monitor.poll(
+            base + Duration::from_secs(65),
+            PollGate::Enabled,
+            false,
+            &mut events,
+        );
+        match &events[0].payload {
+            EventPayload::FocusChanged {
+                window_unfocused_for_ms,
+                prev,
+                ..
+            } => {
+                assert_eq!(
+                    *window_unfocused_for_ms, 60_000,
+                    "correlations persist across a session block"
+                );
+                assert!(prev.is_none(), "no prior segment to attribute");
             }
             other => panic!("expected focus_changed, got {other:?}"),
         }

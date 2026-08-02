@@ -230,6 +230,14 @@ impl KeyboardState {
         }
     }
 
+    /// A session/power boundary resets pressed-key tracking so no chord or
+    /// repeat heuristic spans the boundary (the Windows/macOS rule; a
+    /// release swallowed by the boundary must not suppress future presses).
+    pub(crate) fn reset_after_boundary(&mut self) {
+        self.pressed.clear();
+        self.last_release = None;
+    }
+
     fn modifiers(&self, keymap: &Keymap) -> Modifiers {
         let mut mods = Modifiers::default();
         for &keycode in &self.pressed {
