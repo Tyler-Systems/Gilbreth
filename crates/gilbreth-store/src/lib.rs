@@ -3899,6 +3899,13 @@ struct WriterHeartbeat {
     stale_pre_erase_dropped_persisted: Option<u64>,
     stale_pre_erase_dropped_offset: u64,
     stale_pre_erase_dropped_reset_pending: bool,
+    /// A lock, console disconnect, or suspend explains every later gap until
+    /// its counter-event arrives, not just gaps where the boundary is the last
+    /// event written: system trickle (process churn, power status) lands
+    /// during locked nights and must not resurrect the stale warning.
+    session_locked: bool,
+    session_disconnected: bool,
+    power_suspended: bool,
 }
 
 impl WriterHeartbeat {
@@ -3913,10 +3920,26 @@ impl WriterHeartbeat {
     fn mark_event_at(&mut self, kind: &'static str, now: Instant) {
         self.last_event_at = Some(now);
         self.last_event_kind = Some(kind);
+        match kind {
+            "session_lock" => self.session_locked = true,
+            "session_unlock" => self.session_locked = false,
+            "session_disconnect" => self.session_disconnected = true,
+            "session_connect" => self.session_disconnected = false,
+            "power_suspend" => self.power_suspended = true,
+            "power_resume" | "power_boundary_recovered" => self.power_suspended = false,
+            _ => {}
+        }
         if event_kind_explains_heartbeat_gap(kind) {
             self.last_gap_explainer_at = Some(now);
             self.last_gap_explainer_kind = Some(kind);
         }
+    }
+
+    /// True while capture is known-quiet: sources are gated or silent during
+    /// a lock, a console disconnect, and a suspend, so an event gap is the
+    /// expected shape rather than a stall worth warning about.
+    fn in_quiet_period(&self) -> bool {
+        self.session_locked || self.session_disconnected || self.power_suspended
     }
 
     fn last_event_age_ms_at(&self, now: Instant) -> i64 {
@@ -3934,6 +3957,9 @@ impl WriterHeartbeat {
         let warn_after = warn_after?;
         let last_event_at = self.last_event_at?;
         if now.saturating_duration_since(last_event_at) <= warn_after {
+            return None;
+        }
+        if self.in_quiet_period() {
             return None;
         }
         if self
@@ -6615,6 +6641,70 @@ mod tests {
             heartbeat.stale_warning_at(now, Some(Duration::from_secs(30))),
             None
         );
+    }
+
+    #[test]
+    fn heartbeat_stays_quiet_while_locked_despite_event_trickle() {
+        let now = Instant::now();
+        let mut heartbeat = WriterHeartbeat::default();
+        heartbeat.mark_event_at("session_lock", now - Duration::from_secs(600));
+        heartbeat.mark_event_at("process_churn_summary", now - Duration::from_secs(120));
+
+        assert_eq!(
+            heartbeat.stale_warning_at(now, Some(Duration::from_secs(30))),
+            None
+        );
+    }
+
+    #[test]
+    fn heartbeat_warns_again_once_the_session_unlocks() {
+        let now = Instant::now();
+        let mut heartbeat = WriterHeartbeat::default();
+        heartbeat.mark_event_at("session_lock", now - Duration::from_secs(600));
+        heartbeat.mark_event_at("session_unlock", now - Duration::from_secs(300));
+        heartbeat.mark_event_at("key", now - Duration::from_secs(60));
+
+        let warning = heartbeat
+            .stale_warning_at(now, Some(Duration::from_secs(30)))
+            .expect("post-unlock stale gap warns again");
+
+        assert_eq!(warning.last_event_kind, Some("key"));
+    }
+
+    #[test]
+    fn heartbeat_stays_quiet_while_disconnected_despite_event_trickle() {
+        let now = Instant::now();
+        let mut heartbeat = WriterHeartbeat::default();
+        heartbeat.mark_event_at("session_disconnect", now - Duration::from_secs(600));
+        heartbeat.mark_event_at("power_status", now - Duration::from_secs(120));
+
+        assert_eq!(
+            heartbeat.stale_warning_at(now, Some(Duration::from_secs(30))),
+            None
+        );
+    }
+
+    #[test]
+    fn heartbeat_warns_again_once_power_resumes() {
+        let now = Instant::now();
+        let mut heartbeat = WriterHeartbeat::default();
+        heartbeat.mark_event_at("power_suspend", now - Duration::from_secs(600));
+        heartbeat.mark_event_at("process_started", now - Duration::from_secs(300));
+
+        assert_eq!(
+            heartbeat.stale_warning_at(now, Some(Duration::from_secs(30))),
+            None,
+            "suspend explains the gap even with trickle after it"
+        );
+
+        heartbeat.mark_event_at("power_resume", now - Duration::from_secs(200));
+        heartbeat.mark_event_at("key", now - Duration::from_secs(60));
+
+        let warning = heartbeat
+            .stale_warning_at(now, Some(Duration::from_secs(30)))
+            .expect("post-resume stale gap warns again");
+
+        assert_eq!(warning.last_event_kind, Some("key"));
     }
 
     #[test]
