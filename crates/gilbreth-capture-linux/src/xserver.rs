@@ -34,8 +34,11 @@ const XI_ALL_DEVICES: DeviceId = 0;
 const XI_ALL_MASTER_DEVICES: DeviceId = 1;
 
 atom_manager! {
-    /// The interned EWMH atoms the pump reads. `WM_NAME`/`WM_CLASS` are
-    /// predefined and need no interning.
+    /// The interned EWMH and selection atoms the pump reads. `WM_NAME`/
+    /// `WM_CLASS`/`STRING` are predefined and need no interning. The
+    /// MIME-named entries classify clipboard TARGETS replies; the
+    /// `GILBRETH_CLIPBOARD` property is the transfer window's landing slot
+    /// for those replies.
     pub(crate) Atoms:
     AtomsCookie {
         _NET_ACTIVE_WINDOW,
@@ -45,7 +48,31 @@ atom_manager! {
         _NET_WM_WINDOW_TYPE,
         _NET_WM_WINDOW_TYPE_DESKTOP,
         _NET_WM_WINDOW_TYPE_DOCK,
+        CLIPBOARD,
+        COMPOUND_TEXT,
+        DELETE,
+        GILBRETH_CLIPBOARD,
+        INSERT_PROPERTY,
+        INSERT_SELECTION,
+        MULTIPLE,
+        SAVE_TARGETS,
+        TARGETS,
+        TEXT,
+        TIMESTAMP,
         UTF8_STRING,
+        AUDIO_WAV: b"audio/wav",
+        AUDIO_X_WAV: b"audio/x-wav",
+        GNOME_COPIED_FILES: b"x-special/gnome-copied-files",
+        IMAGE_BMP: b"image/bmp",
+        IMAGE_GIF: b"image/gif",
+        IMAGE_JPEG: b"image/jpeg",
+        IMAGE_PNG: b"image/png",
+        IMAGE_TIFF: b"image/tiff",
+        IMAGE_WEBP: b"image/webp",
+        KDE_PASSWORD_HINT: b"x-kde-passwordManagerHint",
+        TEXT_PLAIN: b"text/plain",
+        TEXT_PLAIN_UTF8: b"text/plain;charset=utf-8",
+        URI_LIST: b"text/uri-list",
     }
 }
 
@@ -88,6 +115,59 @@ pub(crate) fn select_raw_input_events(conn: &RustConnection, root: Window) -> Re
     .map_err(|error| format!("raw input selection failed: {error}"))?
     .check()
     .map_err(|error| format!("raw input selection refused: {error}"))
+}
+
+/// Create the never-mapped InputOnly window that receives XFixes
+/// selection events and hosts the `TARGETS` transfer property (a
+/// requestor must be a window the requesting client owns).
+pub(crate) fn create_transfer_window(
+    conn: &RustConnection,
+    root: Window,
+) -> Result<Window, String> {
+    let window = conn
+        .generate_id()
+        .map_err(|error| format!("transfer window id allocation failed: {error}"))?;
+    conn.create_window(
+        0, // depth: CopyFromParent (required for InputOnly)
+        window,
+        root,
+        -1,
+        -1,
+        1,
+        1,
+        0,
+        x11rb::protocol::xproto::WindowClass::INPUT_ONLY,
+        0, // visual: CopyFromParent
+        &x11rb::protocol::xproto::CreateWindowAux::new(),
+    )
+    .map_err(|error| format!("transfer window creation failed: {error}"))?
+    .check()
+    .map_err(|error| format!("transfer window creation refused: {error}"))?;
+    Ok(window)
+}
+
+/// Negotiate XFixes and select CLIPBOARD selection events on the transfer
+/// window: owner changes (a copy) plus the two owner-vanished subtypes.
+pub(crate) fn select_clipboard_events(
+    conn: &RustConnection,
+    window: Window,
+    atoms: &Atoms,
+) -> Result<(), String> {
+    use x11rb::protocol::xfixes::{ConnectionExt as XFixesConnectionExt, SelectionEventMask};
+    conn.xfixes_query_version(5, 0)
+        .map_err(|error| format!("XFixes version request failed: {error}"))?
+        .reply()
+        .map_err(|error| format!("XFixes is unavailable on this server: {error}"))?;
+    conn.xfixes_select_selection_input(
+        window,
+        atoms.CLIPBOARD,
+        SelectionEventMask::SET_SELECTION_OWNER
+            | SelectionEventMask::SELECTION_WINDOW_DESTROY
+            | SelectionEventMask::SELECTION_CLIENT_CLOSE,
+    )
+    .map_err(|error| format!("selection event selection failed: {error}"))?
+    .check()
+    .map_err(|error| format!("selection event selection refused: {error}"))
 }
 
 /// The slave devices whose x/y axes report absolute positions (touch
@@ -221,6 +301,97 @@ impl XReader {
         })
     }
 
+    /// Ask the CLIPBOARD owner for its declared-type list: a `TARGETS`
+    /// conversion into the transfer window's property, stamped with the
+    /// owner-change time per ICCCM. Flushed immediately so the reply is
+    /// not deferred to the next pass's drain. The type list is metadata;
+    /// no content target is ever requested.
+    pub(crate) fn request_clipboard_targets(&self, window: Window, time: u32) -> bool {
+        let sent = self
+            .conn
+            .convert_selection(
+                window,
+                self.atoms.CLIPBOARD,
+                self.atoms.TARGETS,
+                self.atoms.GILBRETH_CLIPBOARD,
+                time,
+            )
+            .is_ok();
+        sent && self.conn.flush().is_ok()
+    }
+
+    /// Read (and delete) the answered `TARGETS` property: a bounded atom
+    /// array, each atom mapped to its classification so the monitor stays
+    /// platform-pure. `None` when the property vanished or was not an
+    /// atom list — the unavailable verdict.
+    pub(crate) fn read_clipboard_targets(
+        &self,
+        window: Window,
+    ) -> Option<Vec<crate::clipboard::TargetClass>> {
+        let reply = self
+            .conn
+            .get_property(
+                true,
+                window,
+                self.atoms.GILBRETH_CLIPBOARD,
+                AtomEnum::ATOM,
+                0,
+                TARGETS_LIMIT_WORDS,
+            )
+            .ok()?
+            .reply()
+            .ok()?;
+        let targets: Vec<u32> = reply.value32()?.collect();
+        Some(
+            targets
+                .into_iter()
+                .map(|atom| self.classify_target_atom(atom))
+                .collect(),
+        )
+    }
+
+    /// One TARGETS atom's class, the CF_*/UTI parity mapping: plain-text
+    /// spellings, file references, raster images, sounds, the KDE
+    /// password-manager hint, and the ICCCM protocol plumbing.
+    fn classify_target_atom(&self, atom: u32) -> crate::clipboard::TargetClass {
+        use crate::clipboard::TargetClass;
+        let atoms = &self.atoms;
+        if atom == atoms.KDE_PASSWORD_HINT {
+            TargetClass::Concealed
+        } else if atom == atoms.UTF8_STRING
+            || atom == u32::from(AtomEnum::STRING)
+            || atom == atoms.TEXT
+            || atom == atoms.COMPOUND_TEXT
+            || atom == atoms.TEXT_PLAIN
+            || atom == atoms.TEXT_PLAIN_UTF8
+        {
+            TargetClass::Text
+        } else if atom == atoms.URI_LIST || atom == atoms.GNOME_COPIED_FILES {
+            TargetClass::Files
+        } else if atom == atoms.IMAGE_PNG
+            || atom == atoms.IMAGE_JPEG
+            || atom == atoms.IMAGE_TIFF
+            || atom == atoms.IMAGE_BMP
+            || atom == atoms.IMAGE_GIF
+            || atom == atoms.IMAGE_WEBP
+        {
+            TargetClass::Image
+        } else if atom == atoms.AUDIO_WAV || atom == atoms.AUDIO_X_WAV {
+            TargetClass::Audio
+        } else if atom == atoms.TARGETS
+            || atom == atoms.TIMESTAMP
+            || atom == atoms.MULTIPLE
+            || atom == atoms.SAVE_TARGETS
+            || atom == atoms.DELETE
+            || atom == atoms.INSERT_PROPERTY
+            || atom == atoms.INSERT_SELECTION
+        {
+            TargetClass::Meta
+        } else {
+            TargetClass::Other
+        }
+    }
+
     /// The X idle clock: MIT-SCREEN-SAVER `ms_since_user_input`.
     pub(crate) fn idle_ms(&self) -> Option<u64> {
         let reply = self
@@ -335,6 +506,10 @@ const TITLE_READ_LIMIT_WORDS: u32 = 1024;
 /// any real session, and a list past the bound truncates rather than
 /// ballooning the reply.
 const CLIENT_LIST_LIMIT_WORDS: u32 = 4096;
+
+/// TARGETS replies are bounded too: 1024 declared formats is far past any
+/// real clipboard owner.
+const TARGETS_LIMIT_WORDS: u32 = 1024;
 
 /// The executable path for a pid, the Windows `QueryFullProcessImageNameW`
 /// analog: the `/proc/<pid>/exe` link (with the kernel's " (deleted)"

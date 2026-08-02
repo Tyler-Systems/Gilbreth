@@ -18,6 +18,7 @@
 //! approximating. Mirrors `gilbreth-capture-windows`'s crate-level target
 //! gate, so non-Linux workspace builds see an empty shell here.
 
+mod clipboard;
 mod dbus;
 mod foreground;
 mod hotkey;
@@ -230,6 +231,8 @@ struct PumpSignals {
     client_list_dirty: bool,
     /// A `MappingNotify` arrived: the keymap must be rebuilt.
     keymap_dirty: bool,
+    /// CLIPBOARD selection traffic this pass, in arrival order.
+    clipboard: Vec<clipboard::ClipboardSignal>,
     /// The X connection died; the pump must exit rather than spin.
     connection_lost: bool,
     /// Raw input in arrival order.
@@ -251,6 +254,8 @@ trait PumpIo {
 struct XIo {
     conn: Arc<RustConnection>,
     atoms: xserver::Atoms,
+    /// The InputOnly requestor for clipboard TARGETS replies.
+    transfer_window: u32,
     wake_read: OwnedFd,
     /// Slave devices whose x/y valuators are absolute positions (touch
     /// screens): excluded from motion deltas, refreshed on hierarchy
@@ -324,6 +329,27 @@ impl XIo {
             }
             Event::PropertyNotify(notify) if notify.atom == self.atoms._NET_CLIENT_LIST => {
                 signals.client_list_dirty = true;
+            }
+            Event::XfixesSelectionNotify(notify) if notify.selection == self.atoms.CLIPBOARD => {
+                use x11rb::protocol::xfixes::SelectionEvent;
+                let signal = if notify.subtype == SelectionEvent::SET_SELECTION_OWNER {
+                    clipboard::ClipboardSignal::OwnerChanged {
+                        timestamp: notify.timestamp,
+                    }
+                } else {
+                    // WINDOW_DESTROY / CLIENT_CLOSE: the owner vanished.
+                    clipboard::ClipboardSignal::OwnerGone {
+                        timestamp: notify.timestamp,
+                    }
+                };
+                signals.clipboard.push(signal);
+            }
+            Event::SelectionNotify(notify) if notify.requestor == self.transfer_window => {
+                signals
+                    .clipboard
+                    .push(clipboard::ClipboardSignal::TargetsReply {
+                        property_present: notify.property != x11rb::NONE,
+                    });
             }
             Event::MappingNotify(_) => signals.keymap_dirty = true,
             Event::XinputRawKeyPress(event) => signals.raw_inputs.push(raw_key(&event, true)),
@@ -402,7 +428,7 @@ impl PumpIo for XIo {
 /// The pump's capture providers, injected so tests drive scripted state
 /// through the real pump loop without an X server (the macOS `Sources`
 /// pattern).
-struct Sources<AW, ID, KM, PP, VS, SI, PR, SE, PW, CL, WD> {
+struct Sources<AW, ID, KM, PP, VS, SI, PR, SE, PW, CL, WD, CQ, CT> {
     active_window: AW,
     /// The managed-window set (`_NET_CLIENT_LIST`), read on its dirty
     /// edge and the 1 s recheck.
@@ -425,6 +451,10 @@ struct Sources<AW, ID, KM, PP, VS, SI, PR, SE, PW, CL, WD> {
     /// The power seam: PrepareForSleep edges, the boottime clock, and the
     /// sysfs status snapshot.
     power: PW,
+    /// Ask the CLIPBOARD owner for its TARGETS list (metadata only).
+    clipboard_request: CQ,
+    /// Read the answered TARGETS list, classified.
+    clipboard_targets: CT,
 }
 
 /// The production power seam: PrepareForSleep edges from the D-Bus
@@ -477,6 +507,17 @@ where
     xserver::select_raw_input_events(&conn, root)
         .map_err(|error| CaptureError::Source(error.into()))?;
     let absolute_sources = xserver::absolute_pointer_sources(&conn);
+    // Clipboard metadata needs XFixes; a server without it keeps every
+    // other stream and declares this one absent.
+    let transfer_window = xserver::create_transfer_window(&conn, root)
+        .map_err(|error| CaptureError::Source(error.into()))?;
+    let clipboard_live = match xserver::select_clipboard_events(&conn, transfer_window, &atoms) {
+        Ok(()) => true,
+        Err(reason) => {
+            info!(%reason, "clipboard metadata stream absent for this run");
+            false
+        }
+    };
 
     let (wake_read, wake_write) = wake_pipe()?;
     let stop_requested = Arc::new(AtomicBool::new(false));
@@ -508,6 +549,8 @@ where
     let screen_reader = reader.clone();
     let list_reader = reader.clone();
     let details_reader = reader.clone();
+    let targets_request_reader = reader.clone();
+    let targets_read_reader = reader.clone();
     let session_reader = session_watch.clone();
     let power_source = DbusPowerSource {
         watch: session_watch.clone(),
@@ -521,6 +564,7 @@ where
         XIo {
             conn,
             atoms,
+            transfer_window,
             wake_read,
             absolute_sources,
         },
@@ -536,20 +580,26 @@ where
             processes: process::process_snapshot,
             session: move || session_reader.snapshot(),
             power: power_source,
+            clipboard_request: move |time| {
+                clipboard_live
+                    && targets_request_reader.request_clipboard_targets(transfer_window, time)
+            },
+            clipboard_targets: move || targets_read_reader.read_clipboard_targets(transfer_window),
         },
     );
     session_watch.stop();
     result
 }
 
-fn run_pump_loop<F, IO, AW, ID, KM, PP, VS, SI, PR, SE, PW, CL, WD>(
+#[allow(clippy::type_complexity)]
+fn run_pump_loop<F, IO, AW, ID, KM, PP, VS, SI, PR, SE, PW, CL, WD, CQ, CT>(
     tx: Sender<Captured>,
     stop: StopToken,
     stop_requested: Arc<AtomicBool>,
     controls: CaptureControls,
     mut after_service: F,
     mut io: IO,
-    mut sources: Sources<AW, ID, KM, PP, VS, SI, PR, SE, PW, CL, WD>,
+    mut sources: Sources<AW, ID, KM, PP, VS, SI, PR, SE, PW, CL, WD, CQ, CT>,
 ) -> Result<(), CaptureError>
 where
     F: FnMut(),
@@ -557,6 +607,8 @@ where
     AW: FnMut() -> Option<foreground::ActiveWindow>,
     CL: FnMut() -> Option<Vec<u32>>,
     WD: FnMut(u32) -> Option<window::WindowDetails>,
+    CQ: FnMut(u32) -> bool,
+    CT: FnMut() -> Option<Vec<clipboard::TargetClass>>,
     ID: FnMut() -> Option<u64>,
     KM: FnMut() -> Option<keyboard::Keymap>,
     PP: FnMut() -> Option<(i32, i32)>,
@@ -572,6 +624,8 @@ where
     let mut idle_monitor = idle::IdleMonitor::new(controls.idle_threshold(), sources.idle);
     let mut system_monitor = system::SystemMonitor::new(sources.screen, sources.info);
     let mut session_monitor = session::SessionMonitor::new(sources.session);
+    let mut clipboard_monitor =
+        clipboard::ClipboardMonitor::new(sources.clipboard_request, sources.clipboard_targets);
     let mut power_monitor = power::PowerMonitor::new();
     let mut process_monitor = gilbreth_core::ProcessMonitor::new(Instant::now());
     let mut keyboard_state = keyboard::KeyboardState::new();
@@ -604,6 +658,15 @@ where
         let foreground_stream = settings.foreground && !suspended;
         system_monitor.poll(now, system_stream, &mut pending_events);
         session_monitor.poll(now, system_stream, foreground_stream, &mut pending_events);
+        // Clipboard metadata: this pass's selection traffic plus the
+        // request/timeout phases (off-period signals are discarded inside,
+        // the never-replay rule).
+        clipboard_monitor.poll(
+            now,
+            system_stream,
+            signals.clipboard.drain(..),
+            &mut pending_events,
+        );
 
         // Power boundaries (the ported macOS block): observed sleep/wake
         // edges first, then the divergence detector for anything the
@@ -971,6 +1034,8 @@ mod tests {
                 processes: || None,
                 session: || None,
                 power: QuietPower,
+                clipboard_request: |_| false,
+                clipboard_targets: || None,
             },
         )
         .expect("scripted pump exits cleanly");
@@ -1036,6 +1101,8 @@ mod tests {
                 processes: || None,
                 session: || None,
                 power: QuietPower,
+                clipboard_request: |_| false,
+                clipboard_targets: || None,
             },
         )
         .expect("scripted pump exits cleanly");
@@ -1124,6 +1191,8 @@ mod tests {
                     })
                 },
                 power: QuietPower,
+                clipboard_request: |_| false,
+                clipboard_targets: || None,
             },
         )
         .expect("scripted pump exits cleanly");
@@ -1199,6 +1268,8 @@ mod tests {
                     })
                 },
                 power: QuietPower,
+                clipboard_request: |_| false,
+                clipboard_targets: || None,
             },
         )
         .expect("scripted pump exits cleanly");
@@ -1288,6 +1359,8 @@ mod tests {
                 processes: || None,
                 session: || None,
                 power,
+                clipboard_request: |_| false,
+                clipboard_targets: || None,
             },
         )
         .expect("scripted pump exits cleanly");
@@ -1377,6 +1450,8 @@ mod tests {
                 processes: || None,
                 session: || None,
                 power: QuietPower,
+                clipboard_request: |_| false,
+                clipboard_targets: || None,
             },
         )
         .expect("scripted pump exits cleanly");
@@ -1408,6 +1483,88 @@ mod tests {
                 assert_eq!(*origin, gilbreth_core::WindowLifecycleOrigin::Synthesized);
             }
             other => panic!("expected the synthesized close, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn scripted_copy_signals_become_one_metadata_row_through_the_loop() {
+        let (tx, rx) = bounded(32);
+        let stop = StopToken::new();
+        let controls = CaptureControls::all_enabled();
+        let requested = Arc::new(AtomicBool::new(false));
+        let requested_view = requested.clone();
+        let io = ScriptedIo {
+            script: std::collections::VecDeque::from([
+                PumpSignals {
+                    clipboard: vec![clipboard::ClipboardSignal::OwnerChanged { timestamp: 7_000 }],
+                    ..Default::default()
+                },
+                PumpSignals {
+                    clipboard: vec![clipboard::ClipboardSignal::TargetsReply {
+                        property_present: true,
+                    }],
+                    ..Default::default()
+                },
+            ]),
+            stop: stop.clone(),
+            wait: Duration::ZERO,
+        };
+        run_pump_loop(
+            tx,
+            stop,
+            Arc::new(AtomicBool::new(false)),
+            controls,
+            || {},
+            io,
+            Sources {
+                active_window: || None,
+                client_list: || None,
+                window_details: |_| None,
+                idle: || Some(0),
+                keymap: scripted_keymap,
+                pointer_position: || None,
+                screen: || None,
+                info: system::system_info,
+                processes: || None,
+                session: || None,
+                power: QuietPower,
+                clipboard_request: move |time| {
+                    assert_eq!(time, 7_000, "the owner-change timestamp rides the ask");
+                    requested_view.store(true, Ordering::SeqCst);
+                    true
+                },
+                clipboard_targets: || {
+                    Some(vec![
+                        clipboard::TargetClass::Meta,
+                        clipboard::TargetClass::Text,
+                    ])
+                },
+            },
+        )
+        .expect("scripted pump exits cleanly");
+        assert!(requested.load(Ordering::SeqCst), "the TARGETS ask went out");
+
+        let mut rows = Vec::new();
+        while let Ok(captured) = rx.try_recv() {
+            rows.push(captured);
+        }
+        let kinds: Vec<&str> = rows.iter().map(|row| row.payload.kind()).collect();
+        assert_eq!(kinds, vec!["system_info", "clipboard_used"]);
+        match &rows[1].payload {
+            gilbreth_core::EventPayload::ClipboardUsed {
+                sequence_number,
+                format_kind,
+                format_count,
+                text_char_count,
+                byte_size,
+            } => {
+                assert_eq!(*sequence_number, 7_000);
+                assert_eq!(*format_kind, gilbreth_core::ClipboardFormatKind::Text);
+                assert_eq!(*format_count, 1);
+                assert_eq!(*text_char_count, None);
+                assert_eq!(*byte_size, None);
+            }
+            other => panic!("expected clipboard_used, got {other:?}"),
         }
     }
 }
