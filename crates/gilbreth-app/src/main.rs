@@ -121,11 +121,13 @@ const DASHBOARD_PROCESS_FLAG: &str = "--dashboard";
 #[cfg(target_os = "linux")]
 const DIALOG_PROCESS_FLAG: &str = "--dialog";
 /// The scripted graceful stop: ask the running instance to exit through
-/// the WM_CLOSE quit path (same flush as tray Quit). Exit code 0 when the
-/// request was posted to a found window — the flush completes
-/// asynchronously, so poll for process exit before touching the database;
-/// 1 when no window was found.
-#[cfg(windows)]
+/// its own tray-Quit flush path (WM_CLOSE to the system window on
+/// Windows; SIGTERM to the single-instance flock holder on Linux, riding
+/// the existing termination latch). Exit code 0 when the request was
+/// delivered — posted, not processed: the flush completes asynchronously,
+/// so poll for process exit before touching the database; 1 when no
+/// running instance was found.
+#[cfg(any(windows, target_os = "linux"))]
 const QUIT_FLAG: &str = "--quit";
 // Archive and reset is Windows-only until the mac key wrap is decided
 // (owner decision 2026-07-19: no mac archive lane at MAC-2). `dpapi_protect`
@@ -469,6 +471,16 @@ fn main() -> Result<()> {
         .any(|argument| argument.as_os_str() == QUIT_FLAG)
     {
         if gilbreth_capture_windows::request_running_instance_quit() {
+            return Ok(());
+        }
+        std::process::exit(1);
+    }
+    #[cfg(target_os = "linux")]
+    if arguments
+        .iter()
+        .any(|argument| argument.as_os_str() == QUIT_FLAG)
+    {
+        if platform::request_running_instance_quit() {
             return Ok(());
         }
         std::process::exit(1);

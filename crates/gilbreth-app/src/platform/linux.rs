@@ -185,6 +185,18 @@ impl SingleInstance {
             }
             return Err(error).context("failed to lock the single-instance lockfile");
         }
+        // Record the holder's pid for `--quit` discovery, now that the
+        // lock is ours (truncating an unowned lockfile is the churn the
+        // open above avoids; rewriting an owned one is not). Best-effort:
+        // a failed note only degrades the scripted stop, never startup.
+        let pid = std::process::id().to_string();
+        if let Err(error) = file
+            .set_len(0)
+            .and_then(|()| io::Write::write_all(&mut &file, pid.as_bytes()))
+            .and_then(|()| io::Write::flush(&mut &file))
+        {
+            warn!(%error, "single-instance pid note failed; --quit cannot find this instance");
+        }
         Ok(Self { _file: file })
     }
 }
@@ -194,6 +206,46 @@ impl SingleInstance {
 /// cross-session autostart distinction to classify here.
 pub fn is_other_session_instance_error(_error: &anyhow::Error) -> bool {
     false
+}
+
+/// The Linux `--quit` path: ask the running capture instance to exit. The
+/// single-instance flock is the discovery mechanism — a free lock means
+/// nothing to stop, and a held one names its holder through the pid note
+/// written at claim time. SIGTERM rides the existing graceful-termination
+/// latch, so this is the posted-not-processed contract the Windows flag
+/// records: success means the request was delivered, and the flush
+/// completes asynchronously; poll for process exit before touching the
+/// database.
+pub fn request_running_instance_quit() -> bool {
+    let Ok(dir) = local_data_dir() else {
+        return false;
+    };
+    let Some(pid) = running_instance_pid(&dir) else {
+        return false;
+    };
+    // SAFETY: SIGTERM to a pid the flock probe just attributed the running
+    // instance to; delivery failure reports false rather than erroring.
+    (unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) }) == 0
+}
+
+/// The pid holding the single-instance flock, when one does: `None` for a
+/// missing lockfile, an unheld lock, or a holder that recorded no pid (a
+/// binary from before the note existed — the caller reports "not found"
+/// and the operator falls back to a plain signal).
+fn running_instance_pid(dir: &Path) -> Option<u32> {
+    let path = dir.join("gilbreth.lock");
+    let file = fs::OpenOptions::new().read(true).open(&path).ok()?;
+    let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if rc == 0 {
+        // Nobody holds it; dropping the probe's fd releases our claim.
+        return None;
+    }
+    if io::Error::last_os_error().raw_os_error() != Some(libc::EWOULDBLOCK) {
+        return None;
+    }
+    let contents = fs::read_to_string(&path).ok()?;
+    let pid = contents.trim().parse::<u32>().ok()?;
+    (pid != 0).then_some(pid)
 }
 
 /// Cross-thread wake handle for the pump thread: signals the capture
@@ -632,12 +684,24 @@ mod tests {
         );
 
         drop(first);
-        assert!(
-            DashboardUiStateOwner::try_acquire(dir.path())
+        // Retry across the fork-window inheritance race, the rule the
+        // single-instance flock test below records: a concurrent test
+        // thread's child spawn can briefly keep the dropped lock alive
+        // between fork and exec.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if DashboardUiStateOwner::try_acquire(dir.path())
                 .expect("claim after owner closes")
-                .is_some(),
-            "a later viewer can own persistence once the first closes"
-        );
+                .is_some()
+            {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "a later viewer never regained persistence after the first closed"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
         assert!(dir.path().join("dashboard-ui.lock").is_file());
     }
 
@@ -683,6 +747,36 @@ mod tests {
                     std::thread::sleep(std::time::Duration::from_millis(10));
                 }
             }
+        }
+    }
+
+    #[test]
+    fn quit_probe_names_the_flock_holder_and_ignores_a_free_lock() {
+        let dir = tempfile::tempdir().expect("temp data dir");
+        assert_eq!(
+            running_instance_pid(dir.path()),
+            None,
+            "no lockfile means nothing to stop"
+        );
+
+        let claim = SingleInstance::acquire_in(dir.path()).expect("writer claim");
+        assert_eq!(
+            running_instance_pid(dir.path()),
+            Some(std::process::id()),
+            "the holder's pid note is discoverable while the lock is held"
+        );
+
+        drop(claim);
+        // The pid note remains in the file, but a free lock must read as
+        // no instance (retrying across the fork-window inheritance race,
+        // the flock-test rule above).
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while running_instance_pid(dir.path()).is_some() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "lock never read as free after drop"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
         }
     }
 }

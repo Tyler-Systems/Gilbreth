@@ -37,6 +37,12 @@ pub use imp::{
     DashboardUiStateOwner, LifecycleExclusiveGuard, LifecycleGuard, PauseHotkeyRegistration,
     PumpWaker, SingleInstance,
 };
+// The Linux `--quit` seam: Windows reaches its twin through
+// `gilbreth_capture_windows` (the WM_CLOSE post), and macOS has no
+// scripted stop yet, so the re-export is target-gated rather than added
+// to every backend's surface.
+#[cfg(target_os = "linux")]
+pub use imp::request_running_instance_quit;
 
 /// Icon/severity of a blocking dialog. On Windows this maps 1:1 onto
 /// `MB_ICONINFORMATION` / `MB_ICONWARNING`.
