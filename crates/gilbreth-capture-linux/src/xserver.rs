@@ -39,8 +39,12 @@ atom_manager! {
     pub(crate) Atoms:
     AtomsCookie {
         _NET_ACTIVE_WINDOW,
+        _NET_CLIENT_LIST,
         _NET_WM_NAME,
         _NET_WM_PID,
+        _NET_WM_WINDOW_TYPE,
+        _NET_WM_WINDOW_TYPE_DESKTOP,
+        _NET_WM_WINDOW_TYPE_DOCK,
         UTF8_STRING,
     }
 }
@@ -153,6 +157,70 @@ impl XReader {
         })
     }
 
+    /// The window manager's managed-window set: `_NET_CLIENT_LIST` on the
+    /// root window, bounded like every property read. `None` (unreadable,
+    /// or a WM that does not maintain the list) is a blackout the window
+    /// monitor rides out.
+    pub(crate) fn client_list(&self) -> Option<Vec<u32>> {
+        let reply = self
+            .conn
+            .get_property(
+                false,
+                self.root,
+                self.atoms._NET_CLIENT_LIST,
+                AtomEnum::WINDOW,
+                0,
+                CLIENT_LIST_LIMIT_WORDS,
+            )
+            .ok()?
+            .reply()
+            .ok()?;
+        let list: Vec<u32> = reply.value32()?.collect();
+        Some(list)
+    }
+
+    /// One window's lifecycle identity, read at first sight: attribution
+    /// (pid + procfs exe), the open-time title, and the dock/desktop
+    /// exclusion from `_NET_WM_WINDOW_TYPE`. `None` when the window
+    /// vanished before the reads landed.
+    pub(crate) fn window_details(&self, xid: u32) -> Option<crate::window::WindowDetails> {
+        // The type read doubles as the existence probe: a destroyed window
+        // errors here and the monitor skips it rather than fabricating.
+        let type_reply = self
+            .conn
+            .get_property(
+                false,
+                xid,
+                self.atoms._NET_WM_WINDOW_TYPE,
+                AtomEnum::ATOM,
+                0,
+                8,
+            )
+            .ok()?
+            .reply()
+            .ok()?;
+        let excluded = type_reply.value32().is_some_and(|mut kinds| {
+            kinds.any(|kind| {
+                kind == self.atoms._NET_WM_WINDOW_TYPE_DOCK
+                    || kind == self.atoms._NET_WM_WINDOW_TYPE_DESKTOP
+            })
+        });
+        let pid = self
+            .window_u32(xid, self.atoms._NET_WM_PID, AtomEnum::CARDINAL)
+            .unwrap_or(0);
+        let title = self
+            .utf8_text(xid, self.atoms._NET_WM_NAME, self.atoms.UTF8_STRING)
+            .or_else(|| self.legacy_text(xid))
+            .unwrap_or_default();
+        let exe = exe_for_pid(pid).unwrap_or_default();
+        Some(crate::window::WindowDetails {
+            pid,
+            exe,
+            title,
+            excluded,
+        })
+    }
+
     /// The X idle clock: MIT-SCREEN-SAVER `ms_since_user_input`.
     pub(crate) fn idle_ms(&self) -> Option<u64> {
         let reply = self
@@ -262,6 +330,11 @@ impl XReader {
 /// Title reads are bounded (in 32-bit words) so a hostile title cannot
 /// balloon a reply; 1024 words = 4 KiB, far past any real title.
 const TITLE_READ_LIMIT_WORDS: u32 = 1024;
+
+/// Client-list reads are bounded the same way: 4096 windows is far past
+/// any real session, and a list past the bound truncates rather than
+/// ballooning the reply.
+const CLIENT_LIST_LIMIT_WORDS: u32 = 4096;
 
 /// The executable path for a pid, the Windows `QueryFullProcessImageNameW`
 /// analog: the `/proc/<pid>/exe` link (with the kernel's " (deleted)"

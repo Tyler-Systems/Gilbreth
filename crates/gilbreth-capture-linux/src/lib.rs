@@ -1,12 +1,16 @@
 #![cfg(target_os = "linux")]
 
-//! Linux ambient-capture backend (LIN-1, X11 only): the pump — an X
-//! connection drained beside a self-pipe waker on the Windows/macOS service
-//! cadence — plus the capture shell seams the app consumes (the pause-hotkey
-//! grab). Capture streams arrive in the recorded LIN-1 order: foreground
-//! focus with titles (EWMH), idle/active (the X idle clock), keyboard and
-//! mouse rows (XInput2 raw events), display shape, and the procfs process
-//! sweep through the shared core tracker.
+//! Linux ambient-capture backend (LIN-1 + LIN-2, X11 only): the pump — an
+//! X connection drained beside a self-pipe waker on the Windows/macOS
+//! service cadence — plus the capture shell seams the app consumes (the
+//! pause-hotkey grab). LIN-1 carried foreground focus with titles (EWMH),
+//! idle/active (the X idle clock), keyboard and mouse rows (XInput2 raw
+//! events), display shape, and the procfs process sweep through the
+//! shared core tracker. LIN-2 adds the boundaries beside them: session
+//! lock/console edges with the dwell gate (elogind + the locker surface,
+//! `dbus.rs`/`session.rs`), power suspend/resume/status with the ported
+//! recovery (`power.rs`), and window lifecycle from the client list
+//! (`window.rs`).
 //!
 //! Wayland is absent by design (README roadmap): every stream here reads
 //! X11 state that a Wayland compositor deliberately does not expose, and a
@@ -24,6 +28,7 @@ mod power;
 mod process;
 mod session;
 mod system;
+mod window;
 mod xserver;
 
 pub use hotkey::{
@@ -221,6 +226,8 @@ enum RawInput {
 struct PumpSignals {
     /// A root `PropertyNotify` named `_NET_ACTIVE_WINDOW` this pass.
     focus_dirty: bool,
+    /// A root `PropertyNotify` named `_NET_CLIENT_LIST` this pass.
+    client_list_dirty: bool,
     /// A `MappingNotify` arrived: the keymap must be rebuilt.
     keymap_dirty: bool,
     /// The X connection died; the pump must exit rather than spin.
@@ -315,6 +322,9 @@ impl XIo {
             Event::PropertyNotify(notify) if notify.atom == self.atoms._NET_ACTIVE_WINDOW => {
                 signals.focus_dirty = true;
             }
+            Event::PropertyNotify(notify) if notify.atom == self.atoms._NET_CLIENT_LIST => {
+                signals.client_list_dirty = true;
+            }
             Event::MappingNotify(_) => signals.keymap_dirty = true,
             Event::XinputRawKeyPress(event) => signals.raw_inputs.push(raw_key(&event, true)),
             Event::XinputRawKeyRelease(event) => signals.raw_inputs.push(raw_key(&event, false)),
@@ -392,8 +402,13 @@ impl PumpIo for XIo {
 /// The pump's capture providers, injected so tests drive scripted state
 /// through the real pump loop without an X server (the macOS `Sources`
 /// pattern).
-struct Sources<AW, ID, KM, PP, VS, SI, PR, SE, PW> {
+struct Sources<AW, ID, KM, PP, VS, SI, PR, SE, PW, CL, WD> {
     active_window: AW,
+    /// The managed-window set (`_NET_CLIENT_LIST`), read on its dirty
+    /// edge and the 1 s recheck.
+    client_list: CL,
+    /// One window's lifecycle identity, read at first sight.
+    window_details: WD,
     idle: ID,
     /// The keymap read, called at start and on `keymap_dirty`.
     keymap: KM,
@@ -491,6 +506,8 @@ where
     let keymap_reader = reader.clone();
     let pointer_reader = reader.clone();
     let screen_reader = reader.clone();
+    let list_reader = reader.clone();
+    let details_reader = reader.clone();
     let session_reader = session_watch.clone();
     let power_source = DbusPowerSource {
         watch: session_watch.clone(),
@@ -509,6 +526,8 @@ where
         },
         Sources {
             active_window: move || reader.active_window(),
+            client_list: move || list_reader.client_list(),
+            window_details: move |xid| details_reader.window_details(xid),
             idle: move || idle_reader.idle_ms(),
             keymap: move || keymap_reader.keymap(),
             pointer_position: move || pointer_reader.pointer_position(),
@@ -523,19 +542,21 @@ where
     result
 }
 
-fn run_pump_loop<F, IO, AW, ID, KM, PP, VS, SI, PR, SE, PW>(
+fn run_pump_loop<F, IO, AW, ID, KM, PP, VS, SI, PR, SE, PW, CL, WD>(
     tx: Sender<Captured>,
     stop: StopToken,
     stop_requested: Arc<AtomicBool>,
     controls: CaptureControls,
     mut after_service: F,
     mut io: IO,
-    mut sources: Sources<AW, ID, KM, PP, VS, SI, PR, SE, PW>,
+    mut sources: Sources<AW, ID, KM, PP, VS, SI, PR, SE, PW, CL, WD>,
 ) -> Result<(), CaptureError>
 where
     F: FnMut(),
     IO: PumpIo,
     AW: FnMut() -> Option<foreground::ActiveWindow>,
+    CL: FnMut() -> Option<Vec<u32>>,
+    WD: FnMut(u32) -> Option<window::WindowDetails>,
     ID: FnMut() -> Option<u64>,
     KM: FnMut() -> Option<keyboard::Keymap>,
     PP: FnMut() -> Option<(i32, i32)>,
@@ -546,6 +567,8 @@ where
     PW: power::PowerSource,
 {
     let mut foreground_monitor = foreground::ForegroundMonitor::new(sources.active_window);
+    let mut window_monitor =
+        window::WindowMonitor::new(sources.client_list, sources.window_details);
     let mut idle_monitor = idle::IdleMonitor::new(controls.idle_threshold(), sources.idle);
     let mut system_monitor = system::SystemMonitor::new(sources.screen, sources.info);
     let mut session_monitor = session::SessionMonitor::new(sources.session);
@@ -634,6 +657,9 @@ where
             foreground::PollGate::Enabled
         };
         foreground_monitor.poll(now, fg_gate, signals.focus_dirty, &mut pending_events);
+        // Window lifecycle rides the client list; the tracker advances
+        // regardless of the `windows` toggle (rows gate at `send`).
+        window_monitor.poll(now, signals.client_list_dirty, &mut pending_events);
         // The churn filter's focus rescue (Windows `note_focused_app`,
         // ported): record the active exe once per process change so the
         // process stream keeps this app's start/exit rows.
@@ -727,6 +753,7 @@ where
     // churn window, exactly as the other pumps' shutdown flushes do.
     let mut shutdown_events = Vec::new();
     foreground_monitor.flush_at(Instant::now(), &mut shutdown_events);
+    window_monitor.flush_at(Instant::now(), &mut shutdown_events);
     process_monitor.flush(Instant::now(), &mut shutdown_events);
     for captured in shutdown_events {
         send_captured(&tx, &controls, captured);
@@ -934,6 +961,8 @@ mod tests {
             io,
             Sources {
                 active_window: scripted_window,
+                client_list: || None,
+                window_details: |_| None,
                 idle: || Some(0),
                 keymap: scripted_keymap,
                 pointer_position: || Some((10, 20)),
@@ -997,6 +1026,8 @@ mod tests {
             io,
             Sources {
                 active_window: scripted_window,
+                client_list: || None,
+                window_details: |_| None,
                 idle: || Some(0),
                 keymap: scripted_keymap,
                 pointer_position: || Some((10, 20)),
@@ -1074,6 +1105,8 @@ mod tests {
             io,
             Sources {
                 active_window: scripted_window,
+                client_list: || None,
+                window_details: |_| None,
                 idle: || Some(0),
                 keymap: scripted_keymap,
                 pointer_position: || Some((10, 20)),
@@ -1150,6 +1183,8 @@ mod tests {
             io,
             Sources {
                 active_window: scripted_window,
+                client_list: || None,
+                window_details: |_| None,
                 idle: || Some(0),
                 keymap: scripted_keymap,
                 pointer_position: || None,
@@ -1243,6 +1278,8 @@ mod tests {
             io,
             Sources {
                 active_window: scripted_window,
+                client_list: || None,
+                window_details: |_| None,
                 idle: || Some(0),
                 keymap: scripted_keymap,
                 pointer_position: || None,
@@ -1276,6 +1313,101 @@ mod tests {
                 matched_suspend, ..
             } => assert!(matched_suspend, "the observed suspend matches"),
             other => panic!("expected power_resume, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn scripted_client_list_drives_lifecycle_rows_through_the_loop() {
+        let (tx, rx) = bounded(32);
+        let stop = StopToken::new();
+        let controls = CaptureControls::all_enabled();
+        let lists = std::rc::Rc::new(std::cell::RefCell::new(std::collections::VecDeque::from([
+            vec![7u32],
+            vec![7, 9],
+            vec![9],
+        ])));
+        let lists_view = lists.clone();
+        let io = ScriptedIo {
+            script: std::collections::VecDeque::from([
+                PumpSignals {
+                    client_list_dirty: true,
+                    ..Default::default()
+                },
+                PumpSignals {
+                    client_list_dirty: true,
+                    ..Default::default()
+                },
+                PumpSignals {
+                    client_list_dirty: true,
+                    ..Default::default()
+                },
+            ]),
+            stop: stop.clone(),
+            wait: Duration::ZERO,
+        };
+        run_pump_loop(
+            tx,
+            stop,
+            Arc::new(AtomicBool::new(false)),
+            controls,
+            || {},
+            io,
+            Sources {
+                active_window: || None,
+                client_list: move || {
+                    let mut lists = lists_view.borrow_mut();
+                    match lists.pop_front() {
+                        Some(list) => Some(list),
+                        None => Some(vec![9]),
+                    }
+                },
+                window_details: |xid| {
+                    Some(window::WindowDetails {
+                        pid: 1000 + xid,
+                        exe: format!("/usr/bin/app{xid}"),
+                        title: format!("window {xid}"),
+                        excluded: false,
+                    })
+                },
+                idle: || Some(0),
+                keymap: scripted_keymap,
+                pointer_position: || None,
+                screen: || None,
+                info: system::system_info,
+                processes: || None,
+                session: || None,
+                power: QuietPower,
+            },
+        )
+        .expect("scripted pump exits cleanly");
+
+        let mut rows = Vec::new();
+        while let Ok(captured) = rx.try_recv() {
+            rows.push(captured);
+        }
+        let kinds: Vec<&str> = rows.iter().map(|row| row.payload.kind()).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                "system_info",
+                "window_opened", // 9 appears after the silent seed of 7
+                "window_closed", // 7 vanishes; its origin is seeded
+                "window_closed", // shutdown synthesizes 9's close
+            ]
+        );
+        match &rows[2].payload {
+            gilbreth_core::EventPayload::WindowClosed { window, origin, .. } => {
+                assert_eq!(window.hwnd, 7);
+                assert_eq!(*origin, gilbreth_core::WindowLifecycleOrigin::Seeded);
+            }
+            other => panic!("expected the seeded close, got {other:?}"),
+        }
+        match &rows[3].payload {
+            gilbreth_core::EventPayload::WindowClosed { window, origin, .. } => {
+                assert_eq!(window.hwnd, 9);
+                assert_eq!(*origin, gilbreth_core::WindowLifecycleOrigin::Synthesized);
+            }
+            other => panic!("expected the synthesized close, got {other:?}"),
         }
     }
 }
