@@ -165,12 +165,17 @@ Concise status:
 > segment closed with its dwell before the suspend row, the resume
 > matched, the boottime tick delta equaled the wall-clock gap (sleep
 > contributed no dwell), and the forced status sample recorded a real
-> battery change. Still not exercised live, recorded rather than
-> implied: a console VT switch, the recovery lanes (every observed sleep
-> so far delivered both signals), and a password-demanding lock (this
-> machine's saver has locking disabled, so the surface exercised was the
-> same saver window without its password dialog). No packaged Linux
-> release is planned.
+> battery change. A console VT switch followed on 2026-08-02: an elogind
+> Seat.SwitchTo round trip away from the X console wrote the
+> `session_disconnect` and `session_connect` pair, the foreground
+> segment closed with its dwell at the disconnect, the fourteen seconds
+> on the console produced no rows at all, and the segment reopened at
+> zero dwell on reconnect. Still not exercised live, recorded rather
+> than implied: the recovery lanes (every observed sleep so far
+> delivered both signals) and a password-demanding lock (this machine's
+> saver has locking disabled, so the surface exercised was the same
+> saver window without its password dialog). No packaged Linux release
+> is planned.
 
 > **Current through 2026-08-01 (LIN-1):** LIN-1 landed on 2026-08-01 and this
 > column is its contract, with the same day's follow-up closing its two
