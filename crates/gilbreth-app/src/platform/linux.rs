@@ -654,6 +654,35 @@ mod tests {
             .contains("another Gilbreth instance is already running"));
 
         drop(first);
-        drop(SingleInstance::acquire_in(dir.path()).expect("claim released on drop"));
+        // The immediate re-claim can transiently collide with another test
+        // thread's child spawn: fork duplicates this fd for the instant
+        // before exec closes it (std opens with O_CLOEXEC), and flock
+        // lives on the open file description, so the child briefly keeps
+        // the lock alive past the drop above. Observed once under
+        // pre-push load beside the dialog-host child probes (2026-08-01).
+        // Retry across that window; a lock that never releases still
+        // fails.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            match SingleInstance::acquire_in(dir.path()) {
+                Ok(claim) => {
+                    drop(claim);
+                    break;
+                }
+                Err(error) => {
+                    assert!(
+                        error
+                            .to_string()
+                            .contains("another Gilbreth instance is already running"),
+                        "unexpected re-claim failure: {error:#}"
+                    );
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "claim not released on drop: {error:#}"
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+            }
+        }
     }
 }
