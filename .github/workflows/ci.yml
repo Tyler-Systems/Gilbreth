@@ -62,8 +62,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           rustup default $toolchain
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
       - name: cargo fmt
@@ -96,8 +96,8 @@ jobs:
           sudo apt-get update -q
           sudo apt-get install -y -q gcc-mingw-w64-x86-64
           rustup target add x86_64-pc-windows-gnu
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
       - name: cargo fmt
@@ -137,7 +137,7 @@ jobs:
           rust_release="$(python3 -c 'import json; print(json.load(open("packaging/windows/release-config.json", encoding="utf-8"))["rustRelease"])')"
           rustup toolchain install "$rust_release" --profile minimal --component clippy
           rustup default "$rust_release"
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
       - name: cargo clippy, native darwin (-D warnings)
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - name: native workspace tests
